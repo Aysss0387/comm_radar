@@ -1,0 +1,161 @@
+window_months: 4
+weekly_domestic_count: 2
+weekly_international_count: 8
+openalex_per_page: 100
+openalex_max_pages: 6
+crossref_rows: 50
+semantic_scholar_batch_size: 100
+
+profiles:
+  communication_core:
+    label: "传播学/计算传播"
+    terms:
+      - communication
+      - computational communication
+      - social media
+      - platform governance
+      - political communication
+      - health communication
+      - misinformation
+      - disinformation
+      - digital journalism
+      - public opinion
+      - agenda setting
+      - framing
+      - social network analysis
+      - online public sphere
+      - algorithmic communication
+      - 传播学
+      - 计算传播
+      - 社交媒体
+      - 平台治理
+      - 政治传播
+      - 健康传播
+      - 虚假信息
+      - 错误信息
+      - 数字新闻
+      - 舆情
+      - 算法传播
+  anti_fraud:
+    label: "反诈/网络诈骗"
+    boost: true
+    terms:
+      - scam
+      - fraud
+      - phishing
+      - online fraud
+      - telecom fraud
+      - cyber scam
+      - romance scam
+      - investment scam
+      - consumer fraud
+      - anti-fraud
+      - anti fraud communication
+      - warning message
+      - risk communication
+      - deception
+      - 反诈
+      - 诈骗
+      - 网络诈骗
+      - 电信诈骗
+      - 钓鱼攻击
+      - 风险传播
+      - 预警信息
+  ai_communication:
+    label: "人工智能与传播"
+    boost: true
+    terms:
+      - artificial intelligence
+      - generative AI
+      - large language model
+      - LLM
+      - AI-mediated communication
+      - algorithmic recommendation
+      - recommender system
+      - AI literacy
+      - AI misinformation
+      - deepfake
+      - synthetic media
+      - chatbot
+      - human-machine communication
+      - platform algorithm
+      - 人工智能
+      - 生成式AI
+      - 大语言模型
+      - 算法推荐
+      - 人机传播
+      - 深度伪造
+      - 合成媒体
+      - 聊天机器人
+
+exclude_terms:
+  - accounting fraud
+  - tax fraud
+  - insurance fraud
+  - procurement fraud
+  - financial statement fraud
+  - wireless communication
+  - communication protocol
+  - optical communication
+  - microarchitecture
+  - hardware-aware
+  - cloud-native credit
+  - credit systems
+  - financial statement
+  - CPU optimization
+
+exclude_title_patterns:
+  - book review
+  - book notes
+  - corrigendum
+  - correction
+  - editorial
+  - introduction to the special issue
+  - table of contents
+  - call for papers
+  - 书评
+  - 勘误
+  - 目录
+
+authority_sources:
+  top_international:
+    score: 100
+    names:
+      - Journal of Communication
+      - New Media & Society
+      - Journal of Computer-Mediated Communication
+      - Communication Research
+      - Human Communication Research
+      - Information, Communication & Society
+      - Digital Journalism
+      - Political Communication
+      - Public Opinion Quarterly
+      - Social Media + Society
+      - Computers in Human Behavior
+  domestic:
+    score: 95
+    names:
+      - 新闻与传播研究
+      - 国际新闻界
+      - 新闻大学
+      - 现代传播
+      - 编辑之友
+      - 情报杂志
+      - 图书情报工作
+      - Journalism & Communication
+      - Chinese Journal of Communication
+  ai_computation:
+    score: 88
+    names:
+      - CHI Conference on Human Factors in Computing Systems
+      - Proceedings of the ACM on Human-Computer Interaction
+      - CSCW
+      - ICWSM
+      - The Web Conference
+      - WWW
+      - ACL
+      - EMNLP
+      - AAAI
+      - Nature Human Behaviour
+      - Proceedings of the National Academy of Sciences
+      - PNAS

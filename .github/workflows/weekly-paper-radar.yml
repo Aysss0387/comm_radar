@@ -1,0 +1,103 @@
+name: Weekly Paper Radar
+
+on:
+  schedule:
+    # Monday 09:00 Asia/Shanghai = Monday 01:00 UTC
+    - cron: "0 1 * * 1"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "run weekly report, manual search, or email test"
+        required: true
+        default: "run"
+        type: choice
+        options:
+          - run
+          - search
+          - email-test
+      profile:
+        description: "manual profile"
+        required: false
+        default: ""
+      keywords:
+        description: "manual keywords"
+        required: false
+        default: ""
+      journal:
+        description: "manual journal"
+        required: false
+        default: ""
+      region:
+        description: "all/domestic/international"
+        required: false
+        default: "all"
+      limit:
+        description: "manual report size"
+        required: false
+        default: "20"
+
+permissions:
+  contents: write
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run weekly report
+        if: ${{ github.event_name == 'schedule' || inputs.mode == 'run' }}
+        env:
+          OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+          CONTACT_EMAIL: ${{ secrets.CONTACT_EMAIL }}
+          SEMANTIC_SCHOLAR_API_KEY: ${{ secrets.SEMANTIC_SCHOLAR_API_KEY }}
+        run: python -m comm_paper_radar run
+
+      - name: Run manual search
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'search' }}
+        env:
+          OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+          CONTACT_EMAIL: ${{ secrets.CONTACT_EMAIL }}
+          SEMANTIC_SCHOLAR_API_KEY: ${{ secrets.SEMANTIC_SCHOLAR_API_KEY }}
+        run: |
+          ARGS=(search --region "${{ inputs.region }}" --top "${{ inputs.limit }}")
+          if [ -n "${{ inputs.profile }}" ]; then ARGS+=(--profile "${{ inputs.profile }}"); fi
+          if [ -n "${{ inputs.keywords }}" ]; then ARGS+=(--keywords "${{ inputs.keywords }}"); fi
+          if [ -n "${{ inputs.journal }}" ]; then ARGS+=(--journal "${{ inputs.journal }}"); fi
+          python -m comm_paper_radar "${ARGS[@]}"
+
+      - name: Test
+        if: ${{ inputs.mode != 'email-test' }}
+        run: pytest -q
+
+      - name: Commit generated reports
+        if: ${{ github.event_name == 'schedule' || inputs.mode == 'run' || inputs.mode == 'search' }}
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update communication paper radar outputs"
+          file_pattern: "data/*.csv reports/**/*.md"
+
+      - name: Send weekly report email
+        if: ${{ github.event_name == 'schedule' || inputs.mode == 'run' }}
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
+          CONTACT_EMAIL: ${{ secrets.CONTACT_EMAIL }}
+        run: python scripts/send_email.py
+
+      - name: Send test email
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'email-test' }}
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
+          CONTACT_EMAIL: ${{ secrets.CONTACT_EMAIL }}
+        run: python scripts/send_email.py --test
