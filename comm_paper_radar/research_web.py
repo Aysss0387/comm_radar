@@ -556,7 +556,15 @@ class CardStore:
         for entry in list(theories.values()) + list(methods.values()):
             entry["papers"] = sorted(set(entry["papers"]))
             entry["count"] = len(entry["papers"])
-        return {"collection": collection, "card_count": len(cards), "theories": sorted(theories.values(), key=lambda item: item["name"].casefold()), "methods": sorted(methods.values(), key=lambda item: item["name"].casefold()), "links": links, "incomplete": [card["citekey"] for card in cards if not card["theories"] or not card["methods"]]}
+        return {
+            "collection": collection,
+            "card_count": len(cards),
+            "theories": sorted(theories.values(), key=lambda item: item["name"].casefold()),
+            "methods": sorted(methods.values(), key=lambda item: item["name"].casefold()),
+            "links": links,
+            "titles": {card["citekey"]: str(card.get("title") or card["citekey"]) for card in cards},
+            "incomplete": [card["citekey"] for card in cards if not card["theories"] or not card["methods"]],
+        }
 
 
 class DailyStore:
