@@ -29,7 +29,7 @@
       </header>
 
       <section id="dailyView" class="view active">
-        <div class="view-heading"><div><span class="eyebrow">DAILY FEED / 今日精读</span><h1>每天三篇，按你的坐标系挑。</h1><p>① 当前研究最相关 ② 理论值得学 ③ 方法/前沿。不是 IF 排行榜，是你的 Personal Communication Research Feed。</p></div><div class="heading-stats"><div><label class="daily-date-label" for="dailyDateSelect">推荐日期</label><select id="dailyDateSelect" aria-label="选择推荐日期"></select></div></div></div>
+        <div class="view-heading"><div><span class="eyebrow">DAILY FEED / 今日精读</span><h1>每天三篇，按你的坐标系挑。</h1><p>① 当前研究最相关 ② 理论值得学 ③ 方法/前沿。不是 IF 排行榜，是你的 Personal Communication Research Feed。</p></div><div class="daily-heading-actions"><div><span class="daily-date-label">当前日期</span><strong id="dailyDateText">—</strong></div><button class="button" id="generateDaily">获取今日精读推荐</button><label><span class="daily-date-label">浏览推荐日期</span><select id="dailyDateSelect" aria-label="选择推荐日期"></select></label></div></div>
         <div id="dailyContent" class="daily-grid"><p class="muted">正在读取每日推荐…</p></div>
       </section>
 
@@ -48,7 +48,7 @@
       <section id="mapView" class="view"><div class="view-heading compact"><div><span class="eyebrow">RESEARCH ATLAS / 研究地图</span><h1>理论如何遇见方法。</h1><p>矩阵显示论文中同时出现的理论与方法，不将共现解释为因果关系。</p></div><div class="atlas-metric"><strong id="mapCount">—</strong><span>篇有效精读卡</span></div></div><div class="atlas-layout"><div class="atlas-card"><div class="atlas-card-head"><h2>理论 × 方法</h2><span class="muted">点击单元格查看论文</span></div><div id="matrix" class="matrix-wrap"></div></div><aside class="atlas-side"><div class="atlas-card-head"><h2>信息待补全</h2></div><div id="incompleteList" class="incomplete-list"></div></aside></div><div class="method-strip"><div class="atlas-card-head"><h2>方法银行</h2><span class="muted">当前集合中的研究设计</span></div><div id="methodList" class="method-list"></div></div></section>
       <section id="historyView" class="view">
         <div class="view-heading compact"><div><span class="eyebrow">FEED HISTORY / 推荐历史</span><h1>让推荐越来越懂你。</h1><p>浏览过往每日推荐；标记「有用/无用」会轻度调整之后的选文权重。</p></div></div>
-        <div class="toolbar"><select id="historySlotFilter" aria-label="按槽位筛选"><option value="">全部槽位</option><option value="relevance">当前研究最相关</option><option value="theory">理论值得学</option><option value="method">方法/前沿</option></select><select id="historyReadFilter" aria-label="按已读状态筛选"><option value="">全部状态</option><option value="read">已读</option><option value="unread">未读</option></select><label class="search-field"><span>⌕</span><input id="historyVenueInput" type="search" placeholder="按期刊筛选…" aria-label="按期刊筛选"></label></div>
+        <div class="toolbar"><select id="historyDateSelect" aria-label="按推荐日期筛选"><option value="">全部日期</option></select><select id="historySlotFilter" aria-label="按槽位筛选"><option value="">全部槽位</option><option value="relevance">当前研究最相关</option><option value="theory">理论值得学</option><option value="method">方法/前沿</option></select><select id="historyReadFilter" aria-label="按已读状态筛选"><option value="">全部状态</option><option value="read">已读</option><option value="unread">未读</option></select><label class="search-field"><span>⌕</span><input id="historyVenueInput" type="search" placeholder="按期刊筛选…" aria-label="按期刊筛选"></label></div>
         <div id="historyContent" class="daily-grid"><p class="muted">正在读取推荐历史…</p></div>
       </section>
     </main>

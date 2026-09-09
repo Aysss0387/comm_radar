@@ -332,6 +332,34 @@ def test_zotero_web_client_reads_key_write_permission():
         client.create_note("ITEM1", "<p>card</p>")
 
 
+def test_zotero_web_client_rejects_linked_file_before_download():
+    attachment = {"key": "PDF1", "data": {"itemType": "attachment", "contentType": "application/pdf", "linkMode": "linked_file"}}
+    client = ZoteroWebClient("12345", "secret-key", session=FakeSession([FakeResponse(200, attachment)]))
+    with pytest.raises(ResearchWorkspaceError, match="本地链接文件"):
+        client.download_pdf("PDF1")
+
+
+def test_zotero_web_client_downloads_and_validates_cloud_pdf():
+    attachment = {"key": "PDF1", "data": {"itemType": "attachment", "contentType": "application/pdf", "linkMode": "imported_file"}}
+
+    class PdfResponse(FakeResponse):
+        def __init__(self):
+            super().__init__(200, None, {"Content-Type": "application/pdf", "Content-Length": "12"})
+
+        def iter_content(self, chunk_size):
+            return iter([b"%PDF-1.7\n%%EOF"])
+
+    class DownloadSession(FakeSession):
+        def get(self, url, **kwargs):
+            self.requests.append({"method": "GET", "url": url, **kwargs})
+            return PdfResponse()
+
+    session = DownloadSession([FakeResponse(200, attachment)])
+    content = ZoteroWebClient("12345", "secret-key", session=session).download_pdf("PDF1")
+    assert content.startswith(b"%PDF-")
+    assert session.requests[1]["headers"]["Zotero-API-Key"] == "secret-key"
+
+
 def test_zotero_note_renderer_requires_parent_key(tmp_path: Path):
     card = tmp_path / "card.md"
     card.write_text(render_card_template("Smith2024", "A paper", "Framing"), encoding="utf-8")
