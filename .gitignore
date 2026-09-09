@@ -5,3 +5,12 @@ __pycache__/
 .DS_Store
 .env
 
+# 本机 Zotero 研究材料：可能包含受版权保护的全文、私人笔记和本地条目资料。
+research/.DS_Store
+research/archive/
+research/cache/
+research/cards/
+research/drafts/
+research/history/
+research/tasks/
+research/zotero-sync/

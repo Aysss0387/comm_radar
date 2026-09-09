@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>研究工作台 · framing</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand"><span class="brand-mark">◒</span><div><strong>研究工作台</strong><small>reading room · 01</small></div></div>
+      <nav class="nav-tabs">
+        <button class="nav-tab active" data-view="library"><span>01</span>精读桌</button>
+        <button class="nav-tab" data-view="compare"><span>02</span>比较台</button>
+        <button class="nav-tab" data-view="map"><span>03</span>研究地图</button>
+      </nav>
+      <div class="sidebar-note"><span class="eyebrow">当前方式</span><p>Markdown 是主版本。Zotero 提供文献与证据来源。</p></div>
+      <button class="settings-link" id="openSettings">⚙ 设置与连接</button>
+      <div class="connection"><i id="zoteroDot"></i><span id="connectionText">正在读取本地资料…</span></div>
+    </aside>
+
+    <main class="main-stage">
+      <header class="topbar">
+        <div class="topbar-context"><span class="eyebrow">研究集合</span><select id="collectionSelect" aria-label="选择研究集合"></select></div>
+        <div class="topbar-actions"><span id="saveStatus" class="save-status">本地工作台</span><button class="icon-button" id="refreshButton" aria-label="刷新资料">↻</button><button class="avatar" id="openSettingsSmall" aria-label="打开设置">A</button></div>
+      </header>
+
+      <section id="libraryView" class="view active">
+        <div class="view-heading"><div><span class="eyebrow">READING DESK / 精读桌</span><h1>把文献读成自己的地图。</h1><p>从一张证据卡开始，留下你的问题、判断和下一步。</p></div><div class="heading-stats"><div><strong id="cardCount">—</strong><span>篇已建卡</span></div><div><strong id="questionCount">—</strong><span>个待解决问题</span></div></div></div>
+        <div class="toolbar"><label class="search-field"><span>⌕</span><input id="searchInput" type="search" placeholder="搜索标题、理论、方法或正文…" aria-label="搜索文献卡"></label><select id="statusFilter" aria-label="按阅读状态筛选"><option value="">全部状态</option><option>未建卡</option><option>待读</option><option>初读</option><option>精读中</option><option>精读完成</option></select><button class="button subtle" id="compareSelected">加入比较 <b id="compareCount">0</b></button></div>
+        <div class="desk-grid">
+          <section class="paper-rail" aria-label="论文列表"><div class="rail-header"><span>集合条目</span><span id="railCount">—</span></div><div id="paperList" class="paper-list"></div></section>
+          <section class="reader-panel" id="readerPanel" aria-live="polite"><div class="empty-state"><span class="empty-glyph">⌁</span><h2>选择一篇论文开始</h2><p>左侧列表会保留你的阅读位置，选择后这里显示结构化精读卡。</p></div></section>
+          <aside class="evidence-panel"><div class="panel-label"><span>证据与行动</span><span class="panel-rule"></span></div><div id="evidenceContent" class="evidence-content"><p class="muted">选择卡片后，这里显示来源定位和个人问题。</p></div></aside>
+        </div>
+      </section>
+
+      <section id="compareView" class="view"><div class="view-heading compact"><div><span class="eyebrow">COMPARISON TABLE / 比较台</span><h1>让差异显形。</h1><p>并排阅读研究问题、理论、方法与发现。综合分析会单独标记。</p></div><button class="button" id="runCompareAI">✦ AI 比较</button></div><div id="compareContent" class="compare-empty"><span class="empty-glyph">＋</span><h2>从精读桌选择 2–4 篇论文</h2><p>勾选论文后点击“加入比较”。</p></div></section>
+
+      <section id="mapView" class="view"><div class="view-heading compact"><div><span class="eyebrow">RESEARCH ATLAS / 研究地图</span><h1>理论如何遇见方法。</h1><p>矩阵显示论文中同时出现的理论与方法，不将共现解释为因果关系。</p></div><div class="atlas-metric"><strong id="mapCount">—</strong><span>篇有效精读卡</span></div></div><div class="atlas-layout"><div class="atlas-card"><div class="atlas-card-head"><h2>理论 × 方法</h2><span class="muted">点击单元格查看论文</span></div><div id="matrix" class="matrix-wrap"></div></div><aside class="atlas-side"><div class="atlas-card-head"><h2>信息待补全</h2></div><div id="incompleteList" class="incomplete-list"></div></aside></div><div class="method-strip"><div class="atlas-card-head"><h2>方法银行</h2><span class="muted">当前集合中的研究设计</span></div><div id="methodList" class="method-list"></div></div></section>
+    </main>
+  </div>
+
+  <dialog id="settingsDialog" class="settings-dialog"><form method="dialog" id="settingsForm"><div class="dialog-head"><div><span class="eyebrow">LOCAL CONNECTIONS</span><h2>设置与连接</h2></div><button class="close-button" value="cancel" aria-label="关闭设置">×</button></div><div class="settings-section"><h3>AI 服务</h3><p class="muted">密钥只在本次本地进程中使用，网页不会读取它。DeepSeek 请填写 <code>https://api.deepseek.com</code>；不要填写 platform.deepseek.com（那是控制台）。</p><label>接口地址<input id="aiBaseUrl" type="url" placeholder="https://api.deepseek.com 或 https://api.openai.com/v1"></label><label>模型名<input id="aiModel" type="text" placeholder="例如 deepseek-v4-pro 或 gpt-4o-mini"></label><label>API Key<input id="aiKey" type="password" autocomplete="off" placeholder="留空则保持当前密钥"></label><div class="setting-actions"><button type="button" class="button subtle" id="testAI">测试连接</button><span id="aiTestStatus" class="muted"></span></div></div><div class="settings-section"><h3>本地数据</h3><div class="local-status"><span class="status-dot green"></span><span>Markdown 卡片已连接</span></div><div class="local-status"><span class="status-dot" id="zoteroStatusDot"></span><span id="zoteroStatusLabel">Zotero 连接状态读取中</span></div></div><div class="dialog-footer"><button type="button" class="button" id="saveSettings">保存设置</button><button type="button" class="button ghost" value="cancel">稍后设置</button></div></form></dialog>
+  <aside id="taskDrawer" class="task-drawer" aria-live="polite"><div class="drawer-head"><span>AI 任务</span><button id="closeTask" aria-label="关闭任务">×</button></div><div id="taskBody"></div></aside>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

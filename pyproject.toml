@@ -9,6 +9,8 @@ description = "Weekly communication and computational communication paper radar.
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
+  "Flask>=3.0.0",
+  "Markdown>=3.6",
   "PyYAML>=6.0.1",
   "requests>=2.31.0",
 ]
@@ -18,7 +20,9 @@ dev = [
   "pytest>=8.0.0",
 ]
 
+[tool.setuptools.packages.find]
+include = ["comm_paper_radar*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-
