@@ -218,6 +218,31 @@ class ResearchDatabase:
 
         self._run(update())
 
+    def enrichments(self) -> Dict[str, Dict[str, Any]]:
+        async def query() -> Dict[str, Dict[str, Any]]:
+            assert self._pool
+            rows = await self._pool.fetch("SELECT zotero_item_key, data FROM paper_enrichments")
+            return {str(row["zotero_item_key"]): dict(self._json(row["data"]) or {}) for row in rows}
+
+        return self._run(query())
+
+    def save_enrichment(self, item_key: str, collection: str, data: Mapping[str, Any]) -> None:
+        async def save() -> None:
+            assert self._pool
+            await self._pool.execute(
+                """INSERT INTO paper_enrichments (zotero_item_key, collection_name, data)
+                   VALUES ($1, $2, $3::jsonb)
+                   ON CONFLICT (zotero_item_key) DO UPDATE SET
+                     collection_name = EXCLUDED.collection_name,
+                     data = EXCLUDED.data,
+                     updated_at = now()""",
+                item_key,
+                collection,
+                json.dumps(dict(data), ensure_ascii=False),
+            )
+
+        self._run(save())
+
     def save_reading_card(
         self,
         item_key: str,

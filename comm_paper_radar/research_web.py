@@ -41,6 +41,7 @@ from .research_workspace import (
 )
 from .config import load_settings
 from .daily import run_daily
+from .scoring import venue_meta
 from .database import DatabaseUnavailable, ResearchDatabase
 from .research_reading import ReadingMaterialStore, card_document, evidence_ids, reading_prompt
 
@@ -81,6 +82,38 @@ def _split_sections(body: str) -> Dict[str, str]:
 
 def _safe_id(value: str) -> str:
     return value.strip()
+
+
+def _duration_seconds(start: Any, end: Any) -> Optional[float]:
+    try:
+        return round((datetime.fromisoformat(str(end)) - datetime.fromisoformat(str(start))).total_seconds(), 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_ai_json(content: str) -> Dict[str, Any]:
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip())
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        raise ValueError("AI 未返回可解析的 JSON。")
+    parsed = json.loads(match.group(0))
+    if not isinstance(parsed, dict):
+        raise ValueError("AI 返回的 JSON 不是对象。")
+    return parsed
+
+
+def _enrichment_prompt(paper: Mapping[str, Any]) -> str:
+    tags = "、".join(paper.get("tags", [])) or "无"
+    abstract = str(paper.get("abstract") or "").strip() or "（无摘要）"
+    return f"""你是传播学研究助理。根据下面论文的元数据，输出一个 JSON 对象（不要任何解释文字、不要代码块），字段：
+{{"abstract_zh": "摘要的完整中文翻译；若无摘要则为空字符串", "keywords": ["3-8 个中文关键词"], "tags": ["3-5 个研究标签，例如：定量、实验、内容分析、框架理论、健康传播、政治传播、计算方法"], "quick_take": "一到两句话说明这篇论文做了什么、核心发现或价值", "method": "研究方法一句话概括；无法判断写空字符串", "theory": "核心理论；无法判断写空字符串"}}
+
+论文标题：{paper.get('title', '')}
+作者：{'; '.join(paper.get('authors', [])) or '未知'}
+期刊：{paper.get('journal', '') or '未知'}
+发表时间：{paper.get('date', '') or '未知'}
+Zotero 标签：{tags}
+摘要原文：{abstract}"""
 
 
 class CardStore:
@@ -191,19 +224,106 @@ class CardStore:
                 continue
             result.append(summary)
         if collection:
-            result.extend(self._uncarded_zotero_items(collection, query, status, theory, method, {item["zotero_item_key"] for item in result if item.get("has_card") and item.get("zotero_item_key")}))
+            card_item_keys = {item["zotero_item_key"] for item in result if item.get("has_card") and item.get("zotero_item_key")}
+            meta_map, items = self.zotero_collection_data(collection)
+            result.extend(self._uncarded_from_items(items, collection, query, status, theory, method, card_item_keys))
+            enriched = self.enrichment_map()
+            for summary in result:
+                item_key = summary.get("zotero_item_key")
+                if item_key and item_key in meta_map:
+                    summary["paper_meta"] = meta_map[item_key]
+                if item_key and item_key in enriched:
+                    summary["enrichment"] = enriched[item_key]
         return result
 
-    def _uncarded_zotero_items(self, collection: str, query: str, status: Optional[str], theory: Optional[str], method: Optional[str], card_item_keys: set) -> List[Dict[str, Any]]:
-        """Show Zotero papers that have no Markdown card yet, without creating one."""
+    def _settings(self) -> Dict[str, Any]:
+        if not hasattr(self, "_settings_cache"):
+            try:
+                self._settings_cache = load_settings(str(self.base_dir / "config" / "settings.yml"))
+            except Exception:
+                self._settings_cache = {}
+        return self._settings_cache
+
+    def zotero_collection_data(self, collection: str) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+        """Return per-item bibliographic metadata plus the raw Zotero items for a collection."""
         try:
             zotero = zotero_web_client_from_env() if _use_zotero_web_api() else ZoteroLocalClient()
             zotero_collection = zotero.collection_by_name(collection)
             items = zotero.collection_items(str(zotero_collection.get("key")))
+        except Exception:
+            return {}, []
+        settings = self._settings()
+        metas: Dict[str, Dict[str, Any]] = {}
+        for item in items:
+            data = item.get("data", {})
+            item_key = str(item.get("key") or data.get("key") or "")
+            if not item_key:
+                continue
+            authors = []
+            for creator in data.get("creators") or []:
+                name = " ".join(part for part in [creator.get("firstName"), creator.get("lastName")] if part) or str(creator.get("name") or "")
+                if name:
+                    authors.append(name)
+            journal = str(data.get("publicationTitle") or data.get("proceedingsTitle") or data.get("bookTitle") or "")
+            meta: Dict[str, Any] = {
+                "item_key": item_key,
+                "title": str(data.get("title") or ""),
+                "authors": authors,
+                "date": str(data.get("date") or ""),
+                "journal": journal,
+                "abstract": str(data.get("abstractNote") or ""),
+                "tags": [str(tag.get("tag")) for tag in data.get("tags") or [] if tag.get("tag")],
+                "doi": str(data.get("DOI") or ""),
+                "item_type": str(data.get("itemType") or ""),
+            }
+            if journal and settings:
+                try:
+                    venue = venue_meta(journal, settings)
+                    if venue.get("if_2025") or venue.get("rank"):
+                        meta["venue_meta"] = {"if_2025": venue.get("if_2025"), "rank": venue.get("rank"), "group": venue.get("group")}
+                except Exception:
+                    pass
+            metas[item_key] = meta
+        return metas, items
+
+    def enrichment_map(self) -> Dict[str, Dict[str, Any]]:
+        if self.database.available:
+            try:
+                return self.database.enrichments()
+            except (DatabaseUnavailable, TimeoutError, OSError):
+                pass
+        try:
+            payload = json.loads((self.base_dir / "research" / "enrichments.json").read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save_enrichment(self, item_key: str, collection: str, data: Mapping[str, Any]) -> None:
+        if self.database.available:
+            try:
+                self.database.save_enrichment(item_key, collection, data)
+                return
+            except (DatabaseUnavailable, TimeoutError, OSError):
+                pass
+        path = self.base_dir / "research" / "enrichments.json"
+        with self._lock:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    payload = {}
+            except (OSError, ValueError):
+                payload = {}
+            payload[item_key] = dict(data)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _uncarded_from_items(self, items: List[Dict[str, Any]], collection: str, query: str, status: Optional[str], theory: Optional[str], method: Optional[str], card_item_keys: set) -> List[Dict[str, Any]]:
+        """Show Zotero papers that have no Markdown card yet, without creating one."""
+        try:
             keys = [str(item.get("key") or item.get("data", {}).get("key") or "") for item in items]
             citekeys = BetterBibTeXClient().citationkeys(keys) if keys and not _use_zotero_web_api() else {}
         except Exception:
-            return []
+            citekeys = {}
         result = []
         for item in items:
             item_key = str(item.get("key") or item.get("data", {}).get("key") or "")
@@ -411,6 +531,7 @@ class DailyStore:
         self.feedback_path = base_dir / "data" / "feedback.json"
         self.database = database or ResearchDatabase()
         self._lock = threading.RLock()
+        self._generating: set = set()
 
     def _records(self) -> List[Dict[str, Any]]:
         if not self.feed_path.exists():
@@ -453,6 +574,17 @@ class DailyStore:
         existing = self.day(day)
         if len(existing["papers"]) >= 3:
             return {**existing, "generated": False}
+        with self._lock:
+            if day in self._generating:
+                return {**existing, "generated": False, "generating": True}
+            self._generating.add(day)
+        try:
+            return self._generate_for(day)
+        finally:
+            with self._lock:
+                self._generating.discard(day)
+
+    def _generate_for(self, day: str) -> Dict[str, Any]:
         settings = load_settings(str(self.base_dir / "config" / "settings.yml"))
         excluded = self.database.excluded_paper_ids() if self.database.available else set()
         records = run_daily(settings, self.base_dir, day=day, dry_run=True, excluded_keys=excluded)
@@ -588,7 +720,7 @@ class AIService:
             detail = response.text[:300].strip()
         prefix = f"服务返回 {response.status_code}"
         if response.status_code == 401:
-            return f"{prefix}：API Key 无效、已过期或不属于这个服务。"
+            return f"{prefix}：API Key ��效、已过期或不属于这个服务。"
         if response.status_code == 404:
             return f"{prefix}：接口地址或模型名不正确。DeepSeek 应填写 https://api.deepseek.com。"
         if response.status_code == 429:
@@ -622,7 +754,8 @@ class AIService:
 
     def create(self, task_type: str, context: str, citekeys: List[str]) -> str:
         task_id = uuid.uuid4().hex
-        task = {"id": task_id, "type": task_type, "citekeys": citekeys, "status": "排队", "created_at": _utc_now(), "result": None, "error": None, "usage": None}
+        label = f"AI 比较 · {len(citekeys)} 篇" if task_type == "compare" else f"AI 分析 · {len(citekeys)} 篇"
+        task = {"id": task_id, "type": task_type, "label": label, "citekeys": citekeys, "status": "排队", "created_at": _utc_now(), "result": None, "error": None, "usage": None}
         with self.lock:
             self.tasks[task_id] = task
             self._save_task(task_id)
@@ -631,34 +764,84 @@ class AIService:
 
     def create_reading(self, paper: Mapping[str, Any], snapshot: Mapping[str, Any]) -> str:
         task_id = uuid.uuid4().hex
-        task = {"id": task_id, "type": "read", "citekeys": [paper["citekey"]], "paper": dict(paper), "snapshot": {"path": snapshot["path"], "temp_path": snapshot.get("temp_path"), "attachment_key": snapshot["attachment_key"], "content_sha256": snapshot["content_sha256"], "chunk_count": len(snapshot["chunks"])}, "status": "排队", "created_at": _utc_now(), "result": None, "error": None, "usage": None, "call_count": 0}
+        task = {"id": task_id, "type": "read", "label": f"精读生成 · {str(paper.get('title', ''))[:48]}", "citekeys": [paper["citekey"]], "paper": dict(paper), "snapshot": {"path": snapshot["path"], "temp_path": snapshot.get("temp_path"), "attachment_key": snapshot["attachment_key"], "content_sha256": snapshot["content_sha256"], "chunk_count": len(snapshot["chunks"])}, "status": "排队", "created_at": _utc_now(), "result": None, "error": None, "usage": None, "call_count": 0}
         with self.lock:
             self.tasks[task_id] = task
             self._save_task(task_id)
         self.executor.submit(self._run, task_id, reading_prompt(paper, snapshot))
         return task_id
 
+    def _chat(self, prompt: str, system: str = "Return clear Markdown.") -> Tuple[str, Any]:
+        if not self.api_key or not self.model:
+            raise RuntimeError("AI 服务尚未配置。")
+        response = requests.post(self._chat_url(), headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}, json={"model": self.model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}], "temperature": 0.2}, timeout=self.timeout)
+        if not response.ok:
+            raise RuntimeError(self._request_error(response))
+        payload = response.json()
+        return payload.get("choices", [{}])[0].get("message", {}).get("content", ""), payload.get("usage")
+
+    def _finish(self, task_id: str, updates: Dict[str, Any]) -> None:
+        with self.lock:
+            task = self.tasks[task_id]
+            task.update(updates)
+            task["finished_at"] = _utc_now()
+            task["duration_seconds"] = _duration_seconds(task.get("started_at") or task.get("created_at"), task["finished_at"])
+            self._save_task(task_id)
+
     def _run(self, task_id: str, context: str) -> None:
         with self.lock:
             self.tasks[task_id]["status"] = "分析中"
+            self.tasks[task_id]["started_at"] = _utc_now()
             self.tasks[task_id]["call_count"] = self.tasks[task_id].get("call_count", 0) + 1
             self._save_task(task_id)
         try:
-            if not self.api_key or not self.model:
-                raise RuntimeError("AI 服务尚未配置。")
             prompt = context if self.tasks[task_id].get("type") == "read" else "你是传播学研究助理。只依据给定文献卡内容回答。区分作者原始发现与综合分析；每个事实保留原有 citekey 和证据定位。\n\n" + context
-            response = requests.post(self._chat_url(), headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}, json={"model": self.model, "messages": [{"role": "system", "content": "Return clear Markdown."}, {"role": "user", "content": prompt}], "temperature": 0.2}, timeout=self.timeout)
-            if not response.ok:
-                raise RuntimeError(self._request_error(response))
-            payload = response.json()
-            result = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
-            with self.lock:
-                self.tasks[task_id].update({"status": "待采用", "result": result, "usage": payload.get("usage")})
-                self._save_task(task_id)
+            result, usage = self._chat(prompt)
+            self._finish(task_id, {"status": "待采用" if self.tasks[task_id].get("type") == "read" else "完成", "result": result, "usage": usage})
         except Exception as error:  # task boundary: report failure to UI
+            self._finish(task_id, {"status": "失败", "error": str(error)})
+
+    def create_enrichment(self, papers: List[Dict[str, Any]], save: Any) -> str:
+        task_id = uuid.uuid4().hex
+        task = {"id": task_id, "type": "enrich", "label": f"AI 标签与翻译 · {len(papers)} 篇", "citekeys": [], "status": "排队", "created_at": _utc_now(), "result": None, "error": None, "usage": None, "progress": {"done": 0, "total": len(papers), "current": ""}, "items": []}
+        with self.lock:
+            self.tasks[task_id] = task
+            self._save_task(task_id)
+        self.executor.submit(self._run_enrichment, task_id, papers, save)
+        return task_id
+
+    def _run_enrichment(self, task_id: str, papers: List[Dict[str, Any]], save: Any) -> None:
+        with self.lock:
+            self.tasks[task_id]["status"] = "分析中"
+            self.tasks[task_id]["started_at"] = _utc_now()
+            self._save_task(task_id)
+        failures = 0
+        for paper in papers:
+            title = str(paper.get("title") or "")
             with self.lock:
-                self.tasks[task_id].update({"status": "失败", "error": str(error)})
+                self.tasks[task_id]["progress"]["current"] = title
                 self._save_task(task_id)
+            try:
+                content, _usage = self._chat(_enrichment_prompt(paper), system="Return only valid JSON, no markdown.")
+                data = _parse_ai_json(content)
+                data["generated_at"] = _utc_now()
+                save(paper, data)
+                entry = {"title": title, "ok": True}
+            except Exception as error:  # per-paper boundary: keep processing the batch
+                failures += 1
+                entry = {"title": title, "ok": False, "error": str(error)}
+            with self.lock:
+                self.tasks[task_id]["progress"]["done"] += 1
+                self.tasks[task_id]["items"].append(entry)
+                self._save_task(task_id)
+        status = "失败" if failures == len(papers) else ("部分完成" if failures else "完成")
+        self._finish(task_id, {"status": status, "error": f"{failures} 篇处理失败" if failures else None})
+
+    def list_tasks(self) -> List[Dict[str, Any]]:
+        with self.lock:
+            tasks = [dict(task) for task in self.tasks.values()]
+        tasks.sort(key=lambda task: str(task.get("created_at") or ""), reverse=True)
+        return tasks[:50]
 
     def get(self, task_id: str) -> Dict[str, Any]:
         with self.lock:
@@ -789,6 +972,46 @@ def create_app(base_dir: Path) -> Flask:
         except ResearchWorkspaceError as error:
             return jsonify({"error": str(error)}), 400
 
+    @app.post("/api/reading-tasks/batch")
+    def reading_tasks_batch() -> Any:
+        payload = request.get_json(force=True)
+        item_keys = [str(key) for key in payload.get("item_keys", []) if key][:6]
+        collection = str(payload.get("collection") or "").strip()
+        if not item_keys or not collection:
+            return jsonify({"error": "请先勾选论文并指定集合。"}), 400
+        created, errors = [], []
+        for item_key in item_keys:
+            try:
+                paper = store.reading_store.material(item_key)
+                paper["collection"] = collection
+                attachment = next((entry for entry in paper["attachments"] if entry.get("indexed")), None)
+                if not attachment:
+                    errors.append({"item_key": item_key, "title": paper.get("title", ""), "error": "没有已索引的 PDF 附件"})
+                    continue
+                snapshot = store.reading_store.snapshot(paper, str(attachment["key"]))
+                created.append({"item_key": item_key, "citekey": paper["citekey"], "title": paper.get("title", ""), "task_id": ai.create_reading(paper, snapshot)})
+            except (ResearchWorkspaceError, requests.RequestException, OSError, ValueError) as error:
+                errors.append({"item_key": item_key, "error": str(error)})
+        return jsonify({"created": created, "errors": errors}), 202
+
+    @app.post("/api/papers/enrich")
+    def enrich_papers() -> Any:
+        payload = request.get_json(force=True)
+        item_keys = [str(key) for key in payload.get("item_keys", []) if key][:12]
+        collection = str(payload.get("collection") or "").strip()
+        if not item_keys or not collection:
+            return jsonify({"error": "请先勾选论文并指定集合。"}), 400
+        meta_map, _items = store.zotero_collection_data(collection)
+        papers = [meta_map[key] for key in item_keys if key in meta_map]
+        if not papers:
+            return jsonify({"error": "所选论文在 Zotero 集合中找不到。"}), 404
+        task_id = ai.create_enrichment(papers, lambda paper, data: store.save_enrichment(str(paper["item_key"]), collection, data))
+        return jsonify({"task_id": task_id, "count": len(papers)}), 202
+
+    @app.get("/api/tasks")
+    def tasks_list() -> Any:
+        return jsonify({"tasks": ai.list_tasks()})
+
     @app.patch("/api/cards/<citekey>/personal")
     def personal(citekey: str) -> Any:
         try:
@@ -864,7 +1087,7 @@ def create_app(base_dir: Path) -> Flask:
         try:
             return jsonify(ai.get(task_id))
         except KeyError:
-            return jsonify({"error": "找不到任务。"}), 404
+            return jsonify({"error": "找不到任务���"}), 404
 
     @app.post("/api/tasks/<task_id>/adopt")
     def adopt_task(task_id: str) -> Any:
