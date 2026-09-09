@@ -589,6 +589,12 @@ def create_app(base_dir: Path) -> Flask:
             return jsonify({"error": "本地会话无效，请刷新网页。"}), 403
         return None
 
+    @app.after_request
+    def disable_unversioned_asset_cache(response: Any) -> Any:
+        if request.path == "/" or request.path.startswith("/assets/"):
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
+
     @app.get("/")
     def index() -> Any:
         return send_from_directory(str(base_dir / "web"), "index.html")
