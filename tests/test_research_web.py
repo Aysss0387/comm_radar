@@ -110,9 +110,68 @@ def test_web_compare_and_map_return_traceable_data(tmp_path: Path):
     assert any(link["citekey"] == "Second" for link in data["links"])
 
 
-def test_deepseek_console_url_is_normalized_to_api_endpoint(tmp_path: Path):
+def test_deepseek_console_url_is_normalized_to_api_endpoint(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("VERCEL", raising=False)
     service = AIService(tmp_path)
     settings = service.configure({"base_url": "https://platform.deepseek.com", "model": "deepseek-v4-pro"})
     assert settings["base_url"] == "https://api.deepseek.com"
     assert settings["notice"]
     assert service._chat_url() == "https://api.deepseek.com/chat/completions"
+
+
+def test_deepseek_env_configures_ai_and_never_returns_key(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-server-secret")
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
+    monkeypatch.delenv("VERCEL", raising=False)
+    service = AIService(tmp_path)
+    settings = service.public_settings()
+    assert settings["configured"] is True
+    assert settings["managed"] is True
+    assert settings["base_url"] == "https://api.deepseek.com"
+    assert settings["model"] == "deepseek-chat"
+    assert "sk-server-secret" not in json.dumps(settings)
+    result = service.configure({"api_key": "sk-from-browser", "model": "other-model"})
+    assert service.api_key == "sk-server-secret"
+    assert service.model == "deepseek-chat"
+    assert result["notice"]
+    assert "sk" not in json.dumps(result).replace("sk-", "") or "sk-server-secret" not in json.dumps(result)
+
+
+def test_published_env_rejects_browser_submitted_key(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("VERCEL", "1")
+    service = AIService(tmp_path)
+    result = service.configure({"api_key": "sk-from-browser", "model": "deepseek-chat", "base_url": "https://api.deepseek.com"})
+    assert service.api_key == ""
+    assert result["configured"] is False
+    assert "DEEPSEEK_API_KEY" in result["notice"]
+    test_result = service.test()
+    assert test_result["ok"] is False
+    assert "DEEPSEEK_API_KEY" in test_result["message"]
+
+
+def test_published_settings_use_zotero_web_api(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.setenv("ZOTERO_USER_ID", "12345")
+    monkeypatch.setenv("ZOTERO_API_KEY", "zotero-secret")
+
+    class FakeWebClient:
+        def collections(self):
+            return [{"data": {"name": "framing"}}, {"data": {"name": "scam"}}]
+
+        def can_write(self):
+            return True
+
+    import comm_paper_radar.research_web as research_web_module
+
+    monkeypatch.setattr(research_web_module, "zotero_web_client_from_env", lambda session=None: FakeWebClient())
+    client, headers = client_with_token(tmp_path)
+    payload = client.get("/api/settings", headers=headers).get_json()
+    assert payload["zotero"]["mode"] == "web"
+    assert payload["zotero"]["connected"] is True
+    assert payload["zotero"]["collection_count"] == 2
+    assert payload["zotero"]["writable"] is True
+    assert "zotero-secret" not in json.dumps(payload)
+    assert "12345" not in json.dumps(payload["zotero"])

@@ -240,7 +240,7 @@ def render_idea_audit_template(collection: str, question: str, card_count: int) 
 
 ## Research Design Distribution
 
-按理论、对象/语境、方法、样本或平台整理分布；区分“未报告”与“未覆盖”。
+按理论、对象/语境、方法、样本或平台整理分布；区���“未报告”与“未覆盖”。
 
 ## Tensions and Boundary Conditions
 
@@ -358,8 +358,14 @@ class ZoteroWebClient:
             response = self.session.request(method, f"{self.base_url}{self.prefix}{path}", timeout=30, headers=headers, **kwargs)
         except requests.RequestException as error:
             raise ResearchWorkspaceError(f"无法连接 Zotero Web API：{error}") from error
+        if response.status_code == 401:
+            raise ResearchWorkspaceError("Zotero Web API 认证失败（401）：ZOTERO_API_KEY 无效或已撤销，请在 zotero.org/settings/keys 重新生成。")
         if response.status_code == 403:
-            raise ResearchWorkspaceError("Zotero Web API 拒绝访问（403）：请确认 API Key 勾选了库的写权限（Allow write access）。")
+            raise ResearchWorkspaceError("Zotero Web API 拒绝访问（403）：请确认 ZOTERO_USER_ID 正确，且 API Key 勾选了库的写权限（Allow write access）。")
+        if response.status_code == 404:
+            raise ResearchWorkspaceError("Zotero Web API 找不到资源（404）：请确认 ZOTERO_USER_ID 与条目/集合 key 是否正确。")
+        if response.status_code == 429:
+            raise ResearchWorkspaceError("Zotero Web API 请求过于频繁（429）：请稍后重试。")
         if response.status_code == 412:
             raise ResearchWorkspaceError("Zotero 云端笔记版本比本地记录更新（412）：请先在 Zotero 桌面端完成同步，再重试。")
         if not response.ok:
@@ -369,9 +375,20 @@ class ZoteroWebClient:
         except ValueError:
             return None, response.headers
 
+    def _request_paged(self, path: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Read every page so libraries larger than Zotero's 100-item limit stay complete."""
+        results: List[Dict[str, Any]] = []
+        start, limit = 0, 100
+        while True:
+            payload, _ = self._request("GET", path, params={**(params or {}), "start": start, "limit": limit})
+            batch = list(payload or [])
+            results.extend(batch)
+            if len(batch) < limit:
+                return results
+            start += limit
+
     def collections(self) -> List[Dict[str, Any]]:
-        payload, _ = self._request("GET", "/collections", params={"limit": 100})
-        return list(payload or [])
+        return self._request_paged("/collections")
 
     def collection_by_name(self, name: str) -> Dict[str, Any]:
         matches = [item for item in self.collections() if item.get("data", {}).get("name") == name]
@@ -380,16 +397,38 @@ class ZoteroWebClient:
         return matches[0]
 
     def collection_items(self, collection_key: str) -> List[Dict[str, Any]]:
-        payload, _ = self._request("GET", f"/collections/{collection_key}/items", params={"limit": 100})
-        return [item for item in (payload or []) if item.get("data", {}).get("itemType") not in {"attachment", "note", "annotation"} and not item.get("data", {}).get("parentItem")]
+        payload = self._request_paged(f"/collections/{collection_key}/items")
+        return [item for item in payload if item.get("data", {}).get("itemType") not in {"attachment", "note", "annotation"} and not item.get("data", {}).get("parentItem")]
 
     def item(self, item_key: str) -> Dict[str, Any]:
         payload, _ = self._request("GET", f"/items/{item_key}")
         return payload if isinstance(payload, dict) else {}
 
     def child_notes(self, parent_item_key: str) -> List[Dict[str, Any]]:
-        payload, _ = self._request("GET", f"/items/{parent_item_key}/children", params={"limit": 100})
-        return [item for item in (payload or []) if item.get("data", {}).get("itemType") == "note"]
+        payload = self._request_paged(f"/items/{parent_item_key}/children")
+        return [item for item in payload if item.get("data", {}).get("itemType") == "note"]
+
+    def key_info(self) -> Dict[str, Any]:
+        """Read the API key's own permissions from /keys/current (outside the user prefix)."""
+        headers = {"Zotero-API-Key": self.api_key, "Zotero-API-Version": "3"}
+        try:
+            response = self.session.request("GET", f"{self.base_url}/keys/current", timeout=30, headers=headers)
+        except requests.RequestException as error:
+            raise ResearchWorkspaceError(f"无法连接 Zotero Web API：{error}") from error
+        if response.status_code in {401, 403}:
+            raise ResearchWorkspaceError("Zotero Web API 认证失败：ZOTERO_API_KEY 无效或已撤销。")
+        if not response.ok:
+            raise ResearchWorkspaceError(f"Zotero Web API 无法读取 Key 权限（{response.status_code}）。")
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        return payload if isinstance(payload, dict) else {}
+
+    def can_write(self) -> bool:
+        access = self.key_info().get("access", {})
+        user_access = access.get("user", {}) if isinstance(access, dict) else {}
+        return bool(user_access.get("write"))
 
     def create_note(self, parent_item_key: str, note_html: str) -> Tuple[str, int]:
         payload, _ = self._request("POST", "/items", json=[{"itemType": "note", "parentItem": parent_item_key, "note": note_html}])

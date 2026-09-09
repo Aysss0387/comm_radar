@@ -27,6 +27,7 @@ from .research_workspace import (
     BetterBibTeXClient,
     ResearchWorkspaceError,
     ZoteroLocalClient,
+    bbt_planned_citekey,
     zotero_web_client_from_env,
     extract_my_thoughts,
     iter_collection_cards,
@@ -44,6 +45,11 @@ READING_STATUSES = ("待读", "初读", "精读中", "精读完成")
 HEADING_RE = re.compile(r"^#{1,3}\s+(.+?)\s*$", re.MULTILINE)
 EVIDENCE_RE = re.compile(r"\[([^\]]+?\s*(?:¶|段落|paragraph)\s*\d+)\]", re.IGNORECASE)
 EVIDENCE_LOCATOR_RE = re.compile(r"(?P<citekey>[^\s\[\]]+)\s*(?:¶|段落|paragraph)\s*(?P<number>\d+)", re.IGNORECASE)
+
+
+def _published() -> bool:
+    """True when serving from Vercel: Zotero reads go to the Web API, not localhost."""
+    return bool(os.environ.get("VERCEL"))
 
 
 def _utc_now() -> str:
@@ -81,7 +87,8 @@ class CardStore:
     def collections(self) -> List[str]:
         values = {str(meta.get("collection")) for path in self.cards_dir.glob("*.md") for meta in [self._load(path)[0]] if meta.get("collection")}
         try:
-            values.update(str(item.get("data", {}).get("name")) for item in ZoteroLocalClient().collections() if item.get("data", {}).get("name"))
+            client = zotero_web_client_from_env() if _published() else ZoteroLocalClient()
+            values.update(str(item.get("data", {}).get("name")) for item in client.collections() if item.get("data", {}).get("name"))
         except Exception:
             pass
         return sorted(values, key=str.casefold)
@@ -152,11 +159,11 @@ class CardStore:
     def _uncarded_zotero_items(self, collection: str, query: str, status: Optional[str], theory: Optional[str], method: Optional[str], card_item_keys: set) -> List[Dict[str, Any]]:
         """Show Zotero papers that have no Markdown card yet, without creating one."""
         try:
-            zotero = ZoteroLocalClient()
+            zotero = zotero_web_client_from_env() if _published() else ZoteroLocalClient()
             zotero_collection = zotero.collection_by_name(collection)
             items = zotero.collection_items(str(zotero_collection.get("key")))
             keys = [str(item.get("key") or item.get("data", {}).get("key") or "") for item in items]
-            citekeys = BetterBibTeXClient().citationkeys(keys) if keys else {}
+            citekeys = BetterBibTeXClient().citationkeys(keys) if keys and not _published() else {}
         except Exception:
             return []
         result = []
@@ -165,7 +172,7 @@ class CardStore:
             if not item_key or item_key in card_item_keys:
                 continue
             data = item.get("data", {})
-            citekey = citekeys.get(item_key) or data.get("citationKey") or item_key
+            citekey = citekeys.get(item_key) or data.get("citationKey") or bbt_planned_citekey(item) or item_key
             title = str(data.get("title", "未命名条目"))
             if query and query.casefold() not in f"{title} {citekey}".casefold():
                 continue
@@ -207,6 +214,8 @@ class CardStore:
         item_key = str(metadata.get("zotero_item_key") or "").strip()
         if not item_key:
             return {"status": "unavailable", "message": "卡片尚未绑定 Zotero 条目。"}
+        if _published():
+            return {"status": "unavailable", "message": "发布环境不读取本地 PDF 全文；请以条目元数据与卡片内容为准，需要核对原文时使用本地工作台。"}
         try:
             zotero = ZoteroLocalClient()
             attachments = zotero.child_attachments(item_key)
@@ -424,9 +433,17 @@ class DailyStore:
 
 class AIService:
     def __init__(self, base_dir: Path):
-        self.base_url = "https://api.openai.com/v1"
-        self.model = ""
-        self.api_key = ""
+        env_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        self.managed = bool(env_key)
+        self.published = _published()
+        if env_key:
+            self.base_url = os.getenv("DEEPSEEK_BASE_URL", "").strip().rstrip("/") or "https://api.deepseek.com"
+            self.model = os.getenv("DEEPSEEK_MODEL", "").strip() or "deepseek-chat"
+            self.api_key = env_key
+        else:
+            self.base_url = "https://api.openai.com/v1"
+            self.model = ""
+            self.api_key = ""
         self.timeout = 90
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.tasks: Dict[str, Dict[str, Any]] = {}
@@ -447,7 +464,7 @@ class AIService:
         (self.task_dir / f"{task_id}.json").write_text(json.dumps(self.tasks[task_id], ensure_ascii=False, indent=2), encoding="utf-8")
 
     def public_settings(self) -> Dict[str, Any]:
-        return {"base_url": self.base_url, "model": self.model, "configured": bool(self.api_key and self.model)}
+        return {"base_url": self.base_url, "model": self.model, "configured": bool(self.api_key and self.model), "managed": self.managed, "published": self.published}
 
     @staticmethod
     def _normalize_base_url(value: Any) -> Tuple[str, Optional[str]]:
@@ -488,6 +505,10 @@ class AIService:
         return f"{prefix}{'：' + detail if detail else ''}"
 
     def configure(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        if self.managed:
+            return {**self.public_settings(), "notice": "DeepSeek 已由服务端环境变量配置；网页提交的设置不会生效，也不会保存。"}
+        if self.published:
+            return {**self.public_settings(), "notice": "发布环境不接受网页提交的 API Key；请在 Vercel 环境变量中设置 DEEPSEEK_API_KEY 后重新部署。"}
         base_url, notice = self._normalize_base_url(payload.get("base_url") or self.base_url)
         self.base_url = base_url
         self.model = str(payload.get("model") or self.model)
@@ -497,7 +518,8 @@ class AIService:
 
     def test(self) -> Dict[str, Any]:
         if not self.api_key or not self.model:
-            return {"ok": False, "message": "请先填写模型名和 API Key。"}
+            message = "请在 Vercel 环境变量中设置 DEEPSEEK_API_KEY 后重新部署。" if self.published else "请先填写模型名和 API Key。"
+            return {"ok": False, "message": message}
         try:
             response = requests.post(self._chat_url(), headers={"Authorization": f"Bearer {self.api_key}"}, json={"model": self.model, "messages": [{"role": "user", "content": "Reply with OK."}], "max_tokens": 8}, timeout=20)
             if not response.ok:
@@ -684,13 +706,21 @@ def create_app(base_dir: Path) -> Flask:
 
     @app.get("/api/settings")
     def settings() -> Any:
-        try:
-            zotero = ZoteroLocalClient(); zotero.collections()
-            zotero_status = {"api_url": DEFAULT_ZOTERO_URL, "bbt_url": DEFAULT_BBT_URL, "version": zotero.last_version}
-        except ResearchWorkspaceError as error:
-            zotero_status = {"api_url": DEFAULT_ZOTERO_URL, "bbt_url": DEFAULT_BBT_URL, "error": str(error)}
         web_configured = bool(os.getenv("ZOTERO_USER_ID", "").strip() and os.getenv("ZOTERO_API_KEY", "").strip())
-        zotero_status["writable"] = web_configured
+        if _published():
+            zotero_status: Dict[str, Any] = {"mode": "web"}
+            try:
+                client = zotero_web_client_from_env()
+                zotero_status.update({"connected": True, "collection_count": len(client.collections()), "writable": client.can_write()})
+            except ResearchWorkspaceError as error:
+                zotero_status.update({"connected": False, "writable": False, "error": str(error)})
+        else:
+            try:
+                zotero = ZoteroLocalClient(); zotero.collections()
+                zotero_status = {"mode": "local", "api_url": DEFAULT_ZOTERO_URL, "bbt_url": DEFAULT_BBT_URL, "version": zotero.last_version}
+            except ResearchWorkspaceError as error:
+                zotero_status = {"mode": "local", "api_url": DEFAULT_ZOTERO_URL, "bbt_url": DEFAULT_BBT_URL, "error": str(error)}
+            zotero_status["writable"] = web_configured
         zotero_status["web_api"] = {"configured": web_configured, "hint": None if web_configured else "设置 ZOTERO_USER_ID 与 ZOTERO_API_KEY 后即可同步精读卡到 Zotero（zotero.org/settings/keys，需勾选写权限）。"}
         return jsonify({"ai": ai.public_settings(), "zotero": zotero_status})
 
