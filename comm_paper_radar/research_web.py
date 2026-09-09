@@ -102,6 +102,19 @@ def _parse_ai_json(content: str) -> Dict[str, Any]:
     return parsed
 
 
+def _daily_review_prompt(paper: Mapping[str, Any]) -> str:
+    abstract = str(paper.get("abstract") or "").strip() or "（无公开摘要，请基于标题与期刊推断，并明确说明是推断）"
+    return f"""你是资深传播学期刊审稿人兼研究导师。请针对下面这篇每日推荐论文，输出一个 JSON 对象（不要解释文字、不要代码块），字段：
+{{"abstract_zh": "摘要的完整中文翻译，保持学术准确；若无摘要则为空字符串", "verdict": "推荐评语：两三句话，说明这篇论文最值得读的理由和适合谁读", "highlights": "研究亮点：选题新意、数据独特性或发现的贡献，一两句", "method_review": "方法评价：设计是否严谨、证据强度如何，一两句", "relevance": "对传播学研究者的可借鉴之处：理论对话、测量、写作或选题上能学什么，一两句", "caution": "阅读提醒：局限、边界条件或需要谨慎解读的地方，一两句"}}
+
+论文标题：{paper.get('title', '')}
+作者：{'; '.join(paper.get('authors', [])[:8]) or '未知'}
+期刊：{paper.get('venue', '') or '未知'}
+发表时间：{paper.get('publication_date', '') or '未知'}
+推荐槽位：{paper.get('slot_label', '')}
+摘要原文：{abstract}"""
+
+
 def _enrichment_prompt(paper: Mapping[str, Any]) -> str:
     tags = "、".join(paper.get("tags", [])) or "无"
     abstract = str(paper.get("abstract") or "").strip() or "（无摘要）"
@@ -493,7 +506,7 @@ class CardStore:
             ("理论与概念", "Theory and Key Constructs"),
             ("操作化", "Operationalization"),
             ("数据与样本", "Research Context, Data, and Sample"),
-            ("方法", "Method and Analysis"),
+            ("方���", "Method and Analysis"),
             ("发现", "Main Findings"),
             ("局限", "Contributions and Limitations"),
         ]
@@ -883,9 +896,37 @@ def create_app(base_dir: Path) -> Flask:
     def collections() -> Any:
         return jsonify({"collections": store.collections()})
 
+    def _attach_daily_reviews(papers: List[Dict[str, Any]]) -> None:
+        reviews = store.enrichment_map()
+        for paper in papers:
+            review = reviews.get(f"daily:{paper.get('dedupe_key')}")
+            if review:
+                paper["ai_review"] = review
+
     @app.get("/api/daily")
     def daily_feed() -> Any:
-        return jsonify(daily.day(request.args.get("date")))
+        result = daily.day(request.args.get("date"))
+        _attach_daily_reviews(result.get("papers", []))
+        return jsonify(result)
+
+    @app.post("/api/daily/analyze")
+    def daily_analyze() -> Any:
+        payload = request.get_json(force=True)
+        day_value = str(payload.get("date") or "").strip()
+        dedupe_key = str(payload.get("dedupe_key") or "").strip()
+        if not day_value or not dedupe_key:
+            return jsonify({"error": "缺少日期或论文标识。"}), 400
+        paper = next((entry for entry in daily.day(day_value).get("papers", []) if entry.get("dedupe_key") == dedupe_key), None)
+        if not paper:
+            return jsonify({"error": "找不到这条每日推荐。"}), 404
+        try:
+            content, _usage = ai._chat(_daily_review_prompt(paper), system="Return only valid JSON, no markdown.")
+            data = _parse_ai_json(content)
+            data["generated_at"] = _utc_now()
+            store.save_enrichment(f"daily:{dedupe_key}", "daily", data)
+            return jsonify({"ai_review": data})
+        except (RuntimeError, requests.RequestException, ValueError) as error:
+            return jsonify({"error": str(error)}), 502
 
     @app.post("/api/daily/generate")
     def generate_daily_feed() -> Any:
@@ -897,6 +938,7 @@ def create_app(base_dir: Path) -> Flask:
     @app.get("/api/daily/history")
     def daily_history() -> Any:
         papers = daily.history(request.args.get("slot", ""), request.args.get("venue", ""), request.args.get("read_state", ""))
+        _attach_daily_reviews(papers)
         return jsonify({"dates": daily.dates(), "papers": papers})
 
     @app.post("/api/daily/feedback")
