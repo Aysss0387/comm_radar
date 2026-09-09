@@ -2,7 +2,7 @@ import json
 import shutil
 from pathlib import Path
 
-from comm_paper_radar.research_web import AIService, create_app
+from comm_paper_radar.research_web import AIService, DailyStore, create_app
 
 
 def make_web_project(tmp_path: Path) -> Path:
@@ -150,6 +150,53 @@ def test_published_env_rejects_browser_submitted_key(tmp_path: Path, monkeypatch
     test_result = service.test()
     assert test_result["ok"] is False
     assert "DEEPSEEK_API_KEY" in test_result["message"]
+
+
+def test_daily_store_reuses_persisted_day_without_regenerating(tmp_path: Path, monkeypatch):
+    today = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).date().isoformat()
+    papers = [{"date": today, "slot": slot, "dedupe_key": slot} for slot in ("relevance", "theory", "method")]
+
+    class FakeDatabase:
+        available = True
+
+        def day(self, day=None):
+            return {"date": day or today, "dates": [today], "papers": papers}
+
+        def history(self):
+            return papers
+
+    monkeypatch.setattr("comm_paper_radar.research_web.run_daily", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("不应重新生成")))
+    result = DailyStore(tmp_path, FakeDatabase()).generate()
+    assert result["generated"] is False
+    assert len(result["papers"]) == 3
+
+
+def test_daily_store_saves_new_generation_to_database(tmp_path: Path, monkeypatch):
+    today = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).date().isoformat()
+    generated = [{"date": today, "slot": slot, "dedupe_key": slot} for slot in ("relevance", "theory", "method")]
+
+    class FakeDatabase:
+        available = True
+
+        def __init__(self):
+            self.records = []
+
+        def day(self, day=None):
+            return {"date": day or today, "dates": [today] if self.records else [], "papers": self.records}
+
+        def excluded_paper_ids(self):
+            return {"old"}
+
+        def save_recommendations(self, day, records):
+            self.records = list(records)
+            return self.records
+
+    database = FakeDatabase()
+    monkeypatch.setattr("comm_paper_radar.research_web.load_settings", lambda path: {})
+    monkeypatch.setattr("comm_paper_radar.research_web.run_daily", lambda *args, **kwargs: generated)
+    result = DailyStore(tmp_path, database).generate()
+    assert result["generated"] is True
+    assert database.records == generated
 
 
 def test_published_settings_use_zotero_web_api(tmp_path: Path, monkeypatch):

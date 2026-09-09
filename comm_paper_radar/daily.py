@@ -209,7 +209,7 @@ def render_daily_report(day: str, records: List[Dict[str, Any]]) -> str:
     lines = [
         f"# 每日精读推荐 {day}",
         "",
-        "- 三个槽位：① 当前研究最相关 ② 理论值得学 ③ 方法/前沿",
+        "- 三个槽位：① 当前研究最相关 ② 理论值得学 ③ 方法/��沿",
         "- 合规说明：仅使用公开元数据与摘要，不下载全文。",
         "",
     ]
@@ -278,6 +278,7 @@ def run_daily(
     day: Optional[str] = None,
     dry_run: bool = False,
     skip_llm: bool = False,
+    excluded_keys: Optional[Set[str]] = None,
 ) -> List[Dict[str, Any]]:
     day = day or today_iso()
     client = client or SourceClient()
@@ -290,7 +291,7 @@ def run_daily(
     if any(record.get("date") == day for record in existing_records):
         return [record for record in existing_records if record.get("date") == day]
 
-    excluded = load_feed_keys(feed_path) | load_recommended_keys(base_dir / "data" / "recommended.csv")
+    excluded = load_feed_keys(feed_path) | load_recommended_keys(base_dir / "data" / "recommended.csv") | (excluded_keys or set())
     weights = load_feedback_weights(feedback_path(base_dir))
 
     recent_from = (date.fromisoformat(day) - timedelta(days=window_days)).isoformat()

@@ -3,6 +3,13 @@
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
 .source-excerpt{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}.source-excerpt summary{cursor:pointer;color:var(--accent);font-size:12px}.source-note{font-size:11px;color:var(--muted);line-height:1.5}.source-excerpt blockquote{margin:8px 0 0;padding:10px 12px;border-left:3px solid var(--accent);background:var(--paper);font-size:12px;line-height:1.7;white-space:pre-wrap;max-height:260px;overflow:auto}
 /* 今日精读 / 推荐历史 */
+.daily-heading-actions{display:flex;align-items:flex-end;justify-content:flex-end;gap:12px;flex-wrap:wrap;min-width:280px}
+.daily-heading-actions>div{display:flex;flex-direction:column;gap:4px;padding:0 4px 6px}
+.daily-heading-actions strong{font-size:15px;color:var(--ink);white-space:nowrap}
+.daily-heading-actions label{display:flex;flex-direction:column;gap:4px}
+.daily-heading-actions .daily-date-label{margin:0}
+.daily-heading-actions .button{min-height:40px}
+.daily-heading-actions .button:disabled{cursor:default;opacity:.62}
 .daily-grid{display:flex;flex-direction:column;gap:16px;max-width:860px}
 .daily-date-label{display:block;font-size:10px;letter-spacing:.15em;color:var(--teal);font-weight:800;margin-bottom:6px}
 #dailyDateSelect{border:1px solid var(--line);border-radius:9px;padding:8px 12px;background:#fff;color:var(--ink)}
@@ -34,4 +41,4 @@
 .chip.on{background:var(--teal);border-color:var(--teal);color:#fff}
 .chip.on.danger{background:var(--coral);border-color:var(--coral)}
 .history-date{font-size:12px;font-weight:800;letter-spacing:.08em;color:var(--teal);margin:8px 0 -6px}
-@media(max-width:760px){.daily-card{padding:16px}.daily-card h2{font-size:17px}}
+@media(max-width:760px){.daily-heading-actions{justify-content:flex-start;min-width:0}.daily-heading-actions .button{width:100%}.daily-card{padding:16px}.daily-card h2{font-size:17px}}

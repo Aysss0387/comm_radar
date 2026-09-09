@@ -7,12 +7,14 @@ name = "comm-paper-radar"
 version = "0.1.0"
 description = "Weekly communication and computational communication paper radar."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = [
   "Flask>=3.0.0",
   "Markdown>=3.6",
   "PyYAML>=6.0.1",
   "requests>=2.31.0",
+  "asyncpg>=0.31.0",
+  "pypdf>=6.0.0",
 ]
 
 [project.optional-dependencies]

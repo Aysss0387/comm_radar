@@ -35,9 +35,13 @@ from .research_workspace import (
     preserve_my_thoughts,
     render_card_template,
     render_front_matter,
+    split_front_matter,
     sync_zotero_notes,
     validate_card,
 )
+from .config import load_settings
+from .daily import run_daily
+from .database import DatabaseUnavailable, ResearchDatabase
 from .research_reading import ReadingMaterialStore, card_document, evidence_ids, reading_prompt
 
 
@@ -80,16 +84,22 @@ def _safe_id(value: str) -> str:
 
 
 class CardStore:
-    def __init__(self, base_dir: Path):
+    def __init__(self, base_dir: Path, database: Optional[ResearchDatabase] = None):
         self.base_dir = base_dir.resolve()
         self.cards_dir = self.base_dir / "research" / "cards"
         self.collections_dir = self.base_dir / "research" / "collections"
         self.history_dir = self.base_dir / "research" / "history" / "cards"
-        self.reading_store = ReadingMaterialStore(self.base_dir)
+        self.database = database or ResearchDatabase("")
+        self.reading_store = ReadingMaterialStore(self.base_dir, cloud=_use_zotero_web_api())
         self._lock = threading.RLock()
 
     def collections(self) -> List[str]:
         values = {str(meta.get("collection")) for path in self.cards_dir.glob("*.md") for meta in [self._load(path)[0]] if meta.get("collection")}
+        if self.database.available:
+            try:
+                values.update(str(card["metadata"].get("collection")) for card in self.database.reading_cards() if card["metadata"].get("collection"))
+            except (DatabaseUnavailable, TimeoutError, OSError):
+                pass
         try:
             client = zotero_web_client_from_env() if _use_zotero_web_api() else ZoteroLocalClient()
             values.update(str(item.get("data", {}).get("name")) for item in client.collections() if item.get("data", {}).get("name"))
@@ -110,15 +120,16 @@ class CardStore:
                 return path, metadata, body
         raise KeyError(citekey)
 
-    def _summary(self, path: Path, metadata: Dict[str, Any], body: str) -> Dict[str, Any]:
-        citekey = str(metadata.get("citekey", path.stem))
+    def _summary_data(self, metadata: Dict[str, Any], body: str, path: Optional[Path] = None) -> Dict[str, Any]:
+        fallback = path.stem if path else "untitled"
+        citekey = str(metadata.get("citekey", fallback))
         questions = metadata.get("questions", [])
         if not isinstance(questions, list):
             questions = []
         return {
             "id": citekey,
             "citekey": citekey,
-            "title": str(metadata.get("title", path.stem)),
+            "title": str(metadata.get("title", fallback)),
             "collection": str(metadata.get("collection", "")),
             "zotero_item_key": metadata.get("zotero_item_key"),
             "reading_status": metadata.get("reading_status", "初读"),
@@ -130,20 +141,43 @@ class CardStore:
             "methods": [str(item.get("name")) for item in metadata.get("methods", []) if isinstance(item, dict) and item.get("name")],
             "questions": questions,
             "updated_at": metadata.get("updated_at"),
-            "path": str(path.relative_to(self.base_dir)),
-            "hash": _sha(path.read_text(encoding="utf-8")),
+            "path": str(path.relative_to(self.base_dir)) if path else None,
+            "hash": _sha(path.read_text(encoding="utf-8")) if path else _sha(body),
             "has_card": True,
         }
+
+    def _summary(self, path: Path, metadata: Dict[str, Any], body: str) -> Dict[str, Any]:
+        return self._summary_data(metadata, body, path)
 
     def list_cards(self, collection: Optional[str] = None, query: str = "", status: Optional[str] = None, theory: Optional[str] = None, method: Optional[str] = None) -> List[Dict[str, Any]]:
         query = query.strip().casefold()
         result: List[Dict[str, Any]] = []
+        if self.database.available:
+            try:
+                for card in self.database.reading_cards(collection):
+                    metadata, body = dict(card["metadata"]), str(card["content"])
+                    summary = self._summary_data(metadata, body)
+                    haystack = " ".join([summary["title"], summary["citekey"], body, " ".join(summary["theories"]), " ".join(summary["methods"])]).casefold()
+                    if query and query not in haystack:
+                        continue
+                    if status and summary["reading_status"] != status:
+                        continue
+                    if theory and theory not in summary["theories"]:
+                        continue
+                    if method and method not in summary["methods"]:
+                        continue
+                    result.append(summary)
+            except (DatabaseUnavailable, TimeoutError, OSError):
+                pass
+        persistent_keys = {item.get("zotero_item_key") for item in result}
         for path in sorted(self.cards_dir.glob("*.md")):
             try:
                 metadata, body = self._load(path)
             except (OSError, ValueError):
                 continue
             if collection and metadata.get("collection") != collection:
+                continue
+            if metadata.get("zotero_item_key") in persistent_keys:
                 continue
             summary = self._summary(path, metadata, body)
             haystack = " ".join([summary["title"], summary["citekey"], body, " ".join(summary["theories"]), " ".join(summary["methods"])]).casefold()
@@ -188,11 +222,18 @@ class CardStore:
         return result
 
     def detail(self, citekey: str, collection: Optional[str] = None) -> Dict[str, Any]:
-        path, metadata, body = self._find(citekey, collection)
+        path: Optional[Path]
+        try:
+            path, metadata, body = self._find(citekey, collection)
+        except KeyError:
+            card = self.database.reading_card(citekey, collection) if self.database.available else None
+            if not card:
+                raise
+            path, metadata, body = None, dict(card["metadata"]), str(card["content"])
         sections = _split_sections(body)
         evidence = []
         evidence_file = str(metadata.get("evidence_file") or "")
-        snapshot = self._load_evidence_snapshot(evidence_file)
+        snapshot = metadata.get("_evidence_snapshot") or self._load_evidence_snapshot(evidence_file)
         referenced_ids = evidence_ids(body)
         for evidence_id in referenced_ids:
             chunk = next((item for item in snapshot.get("chunks", []) if item.get("id") == evidence_id), None)
@@ -203,7 +244,8 @@ class CardStore:
             locator = EVIDENCE_LOCATOR_RE.search(text)
             source = self._source_excerpt(metadata, locator.group("number") if locator else "1")
             evidence.append({"id": index, "text": text, "status": "待核对" if metadata.get("evidence_status", "来源待核对") != "已核对全文" else "已核对", "source": source})
-        return {"summary": self._summary(path, metadata, body), "metadata": metadata, "body": body, "sections": sections, "my_thoughts": extract_my_thoughts(body).strip(), "evidence": evidence}
+        public_metadata = {key: value for key, value in metadata.items() if not key.startswith("_")}
+        return {"summary": self._summary_data(public_metadata, body, path), "metadata": public_metadata, "body": body, "sections": sections, "my_thoughts": extract_my_thoughts(body).strip(), "evidence": evidence}
 
     def _load_evidence_snapshot(self, relative_path: str) -> Dict[str, Any]:
         path = (self.base_dir / relative_path).resolve()
@@ -292,7 +334,19 @@ class CardStore:
 
     def update_sync_metadata(self, citekey: str, collection: str, note_key: Optional[str]) -> None:
         with self._lock:
-            path, metadata, body = self._find(citekey, collection)
+            try:
+                path, metadata, body = self._find(citekey, collection)
+            except KeyError:
+                card = self.database.reading_card(citekey, collection) if self.database.available else None
+                if not card:
+                    raise
+                metadata = dict(card["metadata"])
+                metadata["sync_status"] = "已同步"
+                if note_key:
+                    metadata["zotero_note_key"] = note_key
+                metadata["updated_at"] = _utc_now()
+                self.database.update_reading_card_metadata(str(card["item_key"]), metadata)
+                return
             current = path.read_text(encoding="utf-8")
             metadata["sync_status"] = "已同步"
             if note_key:
@@ -349,12 +403,13 @@ class CardStore:
 
 
 class DailyStore:
-    """Read the daily feed and persist feedback (read/starred/useful) back to it."""
+    """Persist the daily feed in Neon, with file fallback for local CLI use."""
 
-    def __init__(self, base_dir: Path):
+    def __init__(self, base_dir: Path, database: Optional[ResearchDatabase] = None):
         self.base_dir = base_dir
         self.feed_path = base_dir / "data" / "daily_feed.jsonl"
         self.feedback_path = base_dir / "data" / "feedback.json"
+        self.database = database or ResearchDatabase()
         self._lock = threading.RLock()
 
     def _records(self) -> List[Dict[str, Any]]:
@@ -371,17 +426,52 @@ class DailyStore:
                 continue
         return records
 
+    def _persistent_records(self) -> List[Dict[str, Any]]:
+        if self.database.available:
+            try:
+                return self.database.history()
+            except (DatabaseUnavailable, TimeoutError, OSError):
+                pass
+        return self._records()
+
     def dates(self) -> List[str]:
-        return sorted({str(record.get("date")) for record in self._records() if record.get("date")}, reverse=True)
+        return sorted({str(record.get("date")) for record in self._persistent_records() if record.get("date")}, reverse=True)
 
     def day(self, day: Optional[str] = None) -> Dict[str, Any]:
+        if self.database.available:
+            try:
+                return self.database.day(day)
+            except (DatabaseUnavailable, TimeoutError, OSError):
+                pass
         records = self._records()
         dates = sorted({str(record.get("date")) for record in records if record.get("date")}, reverse=True)
-        target = day or (dates[0] if dates else None)
+        target = day or datetime.now(timezone.utc).date().isoformat()
         return {"date": target, "dates": dates, "papers": [record for record in records if record.get("date") == target]}
 
+    def generate(self) -> Dict[str, Any]:
+        day = datetime.now(timezone.utc).date().isoformat()
+        existing = self.day(day)
+        if len(existing["papers"]) >= 3:
+            return {**existing, "generated": False}
+        settings = load_settings(str(self.base_dir / "config" / "settings.yml"))
+        excluded = self.database.excluded_paper_ids() if self.database.available else set()
+        records = run_daily(settings, self.base_dir, day=day, dry_run=True, excluded_keys=excluded)
+        if not records:
+            raise ResearchWorkspaceError("外部检索没有找到适合今日三个槽位的论文，请稍后重试。")
+        if self.database.available:
+            records = self.database.save_recommendations(day, records)
+        else:
+            with self._lock:
+                current = self._records()
+                if not any(record.get("date") == day for record in current):
+                    self.feed_path.parent.mkdir(parents=True, exist_ok=True)
+                    with self.feed_path.open("a", encoding="utf-8") as handle:
+                        for record in records:
+                            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return {**self.day(day), "generated": True}
+
     def history(self, slot: str = "", venue: str = "", read_state: str = "") -> List[Dict[str, Any]]:
-        records = self._records()
+        records = self._persistent_records()
         if slot:
             records = [record for record in records if record.get("slot") == slot]
         if venue:
@@ -394,6 +484,8 @@ class DailyStore:
         return sorted(records, key=lambda record: (str(record.get("date")), record.get("slot", "")), reverse=True)
 
     def apply_feedback(self, day: str, dedupe_key: str, field: str, value: Any) -> Dict[str, Any]:
+        if self.database.available:
+            return self.database.apply_feedback(day, dedupe_key, field, value)
         if field not in {"read", "starred", "useful"}:
             raise ValueError("反馈字段必须是 read、starred 或 useful。")
         with self._lock:
@@ -403,10 +495,7 @@ class DailyStore:
                 raise KeyError(dedupe_key)
             feedback = target.setdefault("feedback", {"read": False, "starred": False, "useful": None})
             previous_useful = feedback.get("useful")
-            if field == "useful":
-                feedback["useful"] = value if value in {True, False} else None
-            else:
-                feedback[field] = bool(value)
+            feedback[field] = value if field == "useful" and value in {True, False} else (None if field == "useful" else bool(value))
             with self.feed_path.open("w", encoding="utf-8") as handle:
                 for record in records:
                     handle.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -421,8 +510,7 @@ class DailyStore:
             payload = json.loads(self.feedback_path.read_text(encoding="utf-8")) if self.feedback_path.exists() else {}
         except (OSError, ValueError):
             payload = {}
-        venues = payload.setdefault("venues", {})
-        counts = venues.setdefault(venue, {"useful": 0, "useless": 0})
+        counts = payload.setdefault("venues", {}).setdefault(venue, {"useful": 0, "useless": 0})
         if previous is True:
             counts["useful"] = max(0, counts["useful"] - 1)
         elif previous is False:
@@ -452,7 +540,7 @@ class AIService:
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.tasks: Dict[str, Dict[str, Any]] = {}
         self.lock = threading.RLock()
-        self.task_dir = base_dir / "research" / "tasks"
+        self.task_dir = (Path(tempfile.gettempdir()) if self.published else base_dir) / "research" / "tasks"
         self.task_dir.mkdir(parents=True, exist_ok=True)
         for path in self.task_dir.glob("*.json"):
             try:
@@ -543,7 +631,7 @@ class AIService:
 
     def create_reading(self, paper: Mapping[str, Any], snapshot: Mapping[str, Any]) -> str:
         task_id = uuid.uuid4().hex
-        task = {"id": task_id, "type": "read", "citekeys": [paper["citekey"]], "paper": dict(paper), "snapshot": {"path": snapshot["path"], "attachment_key": snapshot["attachment_key"], "chunk_count": len(snapshot["chunks"])}, "status": "排队", "created_at": _utc_now(), "result": None, "error": None, "usage": None, "call_count": 0}
+        task = {"id": task_id, "type": "read", "citekeys": [paper["citekey"]], "paper": dict(paper), "snapshot": {"path": snapshot["path"], "temp_path": snapshot.get("temp_path"), "attachment_key": snapshot["attachment_key"], "content_sha256": snapshot["content_sha256"], "chunk_count": len(snapshot["chunks"])}, "status": "排队", "created_at": _utc_now(), "result": None, "error": None, "usage": None, "call_count": 0}
         with self.lock:
             self.tasks[task_id] = task
             self._save_task(task_id)
@@ -582,12 +670,13 @@ class AIService:
 def create_app(base_dir: Path) -> Flask:
     base_dir = base_dir.resolve()
     app = Flask(__name__, static_folder=str(base_dir / "web"), static_url_path="/assets")
-    store, ai, daily = CardStore(base_dir), AIService(base_dir), DailyStore(base_dir)
+    database = ResearchDatabase()
+    store, ai, daily = CardStore(base_dir, database), AIService(base_dir), DailyStore(base_dir, database)
     session_token = secrets.token_urlsafe(24)
 
     @app.before_request
     def guard_api() -> Optional[Any]:
-        if request.path == "/api/session":
+        if request.path == "/api/session" or _published():
             return None
         if request.path.startswith("/api/") and request.headers.get("X-Research-Session") != session_token:
             return jsonify({"error": "本地会话无效，请刷新网页。"}), 403
@@ -615,9 +704,17 @@ def create_app(base_dir: Path) -> Flask:
     def daily_feed() -> Any:
         return jsonify(daily.day(request.args.get("date")))
 
+    @app.post("/api/daily/generate")
+    def generate_daily_feed() -> Any:
+        try:
+            return jsonify(daily.generate())
+        except (ResearchWorkspaceError, DatabaseUnavailable, requests.RequestException, TimeoutError) as error:
+            return jsonify({"error": str(error)}), 503
+
     @app.get("/api/daily/history")
     def daily_history() -> Any:
-        return jsonify({"papers": daily.history(request.args.get("slot", ""), request.args.get("venue", ""), request.args.get("read_state", ""))})
+        papers = daily.history(request.args.get("slot", ""), request.args.get("venue", ""), request.args.get("read_state", ""))
+        return jsonify({"dates": daily.dates(), "papers": papers})
 
     @app.post("/api/daily/feedback")
     def daily_feedback() -> Any:
@@ -778,17 +875,34 @@ def create_app(base_dir: Path) -> Flask:
         if task_data.get("type") != "read" or task_data.get("status") != "待采用" or not task_data.get("result"):
             return jsonify({"error": "只有完成的精读草稿可以采用。"}), 409
         paper = task_data.get("paper") or {}
-        snapshot_path = str((task_data.get("snapshot") or {}).get("path") or "")
-        snapshot_file = (base_dir / snapshot_path).resolve()
-        if base_dir not in snapshot_file.parents or not snapshot_file.is_file():
+        snapshot_info = task_data.get("snapshot") or {}
+        snapshot_path = str(snapshot_info.get("temp_path") or snapshot_info.get("path") or "")
+        snapshot_file = Path(snapshot_path) if Path(snapshot_path).is_absolute() else (base_dir / snapshot_path).resolve()
+        allowed_roots = {base_dir, Path(tempfile.gettempdir()).resolve()}
+        if not snapshot_file.is_file() or not any(root == snapshot_file.parent or root in snapshot_file.parents for root in allowed_roots):
             return jsonify({"error": "精读证据快照已不存在，无法采用。"}), 409
         snapshot = json.loads(snapshot_file.read_text(encoding="utf-8"))
-        output = store.cards_dir / (re.sub(r"[^A-Za-z0-9._-]", "-", str(paper["citekey"])).strip("-") or "untitled")
-        output = output.with_suffix(".md")
-        if output.exists():
-            return jsonify({"error": "正式卡片已存在；请先查看并决定是否保留现有卡片。"}), 409
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(card_document(paper, snapshot, str(task_data["result"])), encoding="utf-8")
+        document = card_document(paper, {**snapshot, "path": snapshot_info.get("path", snapshot.get("path", ""))}, str(task_data["result"]))
+        metadata, body = split_front_matter(document)
+        if database.available:
+            stored_metadata = {**metadata, "_evidence_snapshot": snapshot}
+            database.save_reading_card(
+                str(paper["item_key"]),
+                str(paper["collection"]),
+                str(paper["citekey"]),
+                stored_metadata,
+                body,
+                str(snapshot["attachment_key"]),
+                str(snapshot["content_sha256"]),
+            )
+        else:
+            output = store.cards_dir / (re.sub(r"[^A-Za-z0-9._-]", "-", str(paper["citekey"])).strip("-") or "untitled")
+            output = output.with_suffix(".md")
+            if output.exists():
+                return jsonify({"error": "正式卡片已存在；请先查看并决定是否保留现有卡片。"}), 409
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(document, encoding="utf-8")
+        snapshot_file.unlink(missing_ok=True)
         task_data["status"] = "已采用"
         ai._save_task(task_id)
         return jsonify(store.detail(str(paper["citekey"]), str(paper["collection"]))), 201
@@ -796,15 +910,30 @@ def create_app(base_dir: Path) -> Flask:
     @app.post("/api/cards/<citekey>/sync")
     def sync_card(citekey: str) -> Any:
         try:
-            _, metadata, _ = store._find(_safe_id(citekey), request.args.get("collection"))
-            collection = str(metadata["collection"])
-            report = sync_zotero_notes(store.cards_dir, collection, base_dir / "research" / "zotero-sync" / "notes.json", zotero_web_client_from_env(), dry_run=False)
-            result = next((item for item in report if Path(str(item.get("card_path", ""))).name == f"{citekey}.md"), None)
+            safe_citekey = _safe_id(citekey)
+            requested_collection = request.args.get("collection")
+            try:
+                _, metadata, _ = store._find(safe_citekey, requested_collection)
+                collection = str(metadata["collection"])
+                report = sync_zotero_notes(store.cards_dir, collection, base_dir / "research" / "zotero-sync" / "notes.json", zotero_web_client_from_env(), dry_run=False)
+            except KeyError:
+                card = database.reading_card(safe_citekey, requested_collection) if database.available else None
+                if not card:
+                    raise
+                metadata, body = dict(card["metadata"]), str(card["content"])
+                collection = str(metadata["collection"])
+                public_metadata = {key: value for key, value in metadata.items() if not key.startswith("_")}
+                with tempfile.TemporaryDirectory(prefix="zotero-sync-") as temporary:
+                    cards_dir = Path(temporary) / "cards"
+                    cards_dir.mkdir()
+                    (cards_dir / f"{safe_citekey}.md").write_text(render_front_matter(public_metadata, body), encoding="utf-8")
+                    report = sync_zotero_notes(cards_dir, collection, Path(temporary) / "notes.json", zotero_web_client_from_env(), dry_run=False)
+            result = next((item for item in report if Path(str(item.get("card_path", ""))).name == f"{safe_citekey}.md"), None)
             if not result or result.get("status") not in {"created", "updated", "unchanged"}:
                 raise ResearchWorkspaceError(str((result or {}).get("issues", ["同步未完成"])[0]))
-            store.update_sync_metadata(_safe_id(citekey), collection, result.get("note_key"))
+            store.update_sync_metadata(safe_citekey, collection, result.get("note_key"))
             return jsonify(result)
-        except (KeyError, ResearchWorkspaceError) as error:
+        except (KeyError, ResearchWorkspaceError, DatabaseUnavailable) as error:
             return jsonify({"error": str(error)}), 409
 
     @app.post("/api/tasks/<task_id>/draft")

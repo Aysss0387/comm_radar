@@ -408,6 +408,48 @@ class ZoteroWebClient:
         payload = self._request_paged(f"/items/{parent_item_key}/children")
         return [item for item in payload if item.get("data", {}).get("itemType") == "note"]
 
+    def child_attachments(self, parent_item_key: str) -> List[Dict[str, Any]]:
+        payload = self._request_paged(f"/items/{parent_item_key}/children")
+        return [item for item in payload if item.get("data", {}).get("itemType") == "attachment"]
+
+    def download_pdf(self, attachment_key: str, max_bytes: int = 20 * 1024 * 1024) -> bytes:
+        attachment = self.item(attachment_key)
+        data = attachment.get("data", {})
+        link_mode = str(data.get("linkMode") or "")
+        if link_mode == "linked_file":
+            raise ResearchWorkspaceError("该 PDF 是 Zotero 本地链接文件，未上传到 Zotero File Storage；请改为存储副本并完成同步。")
+        if str(data.get("contentType") or "").lower() != "application/pdf":
+            raise ResearchWorkspaceError("所选附件不是 PDF，无法生成全文精读。")
+        headers = {"Zotero-API-Key": self.api_key, "Zotero-API-Version": "3"}
+        try:
+            response = self.session.get(
+                f"{self.base_url}{self.prefix}/items/{attachment_key}/file",
+                headers=headers,
+                timeout=60,
+                stream=True,
+                allow_redirects=True,
+            )
+        except requests.RequestException as error:
+            raise ResearchWorkspaceError(f"下载 Zotero 云端 PDF 失败：{error}") from error
+        if response.status_code in {401, 403}:
+            raise ResearchWorkspaceError("Zotero File Storage 拒绝下载：请确认 API Key 有读取文件权限，且附件已同步到 Zotero 云端。")
+        if response.status_code == 404:
+            raise ResearchWorkspaceError("Zotero 云端没有这份 PDF；附件可能仅在本地或仅同步到了 WebDAV。")
+        if not response.ok:
+            raise ResearchWorkspaceError(f"Zotero 云端 PDF 下载失败（{response.status_code}）。")
+        declared_size = int(response.headers.get("Content-Length") or 0)
+        if declared_size > max_bytes:
+            raise ResearchWorkspaceError(f"PDF 超过 {max_bytes // 1024 // 1024} MB 的精读上限。")
+        content = bytearray()
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            content.extend(chunk)
+            if len(content) > max_bytes:
+                raise ResearchWorkspaceError(f"PDF 超过 {max_bytes // 1024 // 1024} MB 的精读上限。")
+        content_type = str(response.headers.get("Content-Type") or "").lower()
+        if not bytes(content).startswith(b"%PDF-") or (content_type and "pdf" not in content_type and "octet-stream" not in content_type):
+            raise ResearchWorkspaceError("Zotero 返回的文件不是有效 PDF，请检查附件同步状态。")
+        return bytes(content)
+
     def key_info(self) -> Dict[str, Any]:
         """Read the API key's own permissions from /keys/current (outside the user prefix)."""
         headers = {"Zotero-API-Key": self.api_key, "Zotero-API-Version": "3"}
