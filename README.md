@@ -144,6 +144,20 @@ export ZOTERO_API_KEY="你的 API key"
 
 网页共有五个视图：**今日精读**（每日三篇推荐卡，支持已读/收藏/有用反馈）、**精读桌**、**比较台**、**研究地图**、**推荐历史**（按槽位、期刊、已读状态筛选过往推荐）。
 
+### 发布到 Vercel（个人使用）
+
+发布环境的凭据全部保存在 Vercel 项目的 **Settings → Environment Variables**（选 Production 和 Preview，保存后重新部署），配置一次即可长期使用：
+
+- `DEEPSEEK_API_KEY`：必需。网页 AI 精读/比较使用；配置后网页显示“DeepSeek 已由服务端配置”，不再需要输入 Key。可选 `DEEPSEEK_MODEL`（默认 `deepseek-chat`）、`DEEPSEEK_BASE_URL`（默认 `https://api.deepseek.com`）。
+- `ZOTERO_USER_ID`、`ZOTERO_API_KEY`：必需。发布环境不访问本地 Zotero，集合与论文改由 Zotero Web API（api.zotero.org）读取；同步精读卡需要 API Key 勾选 Allow write access。
+
+安全边界：
+
+- API Key 只存在服务端，任何接口响应、HTML 和日志都不返回密钥；发布环境也不接受网页提交的 Key。
+- 站点依赖 Vercel Deployment Protection 限制为本人访问；关闭该保护会让任何人读取文献元数据并消耗 DeepSeek 额度，不建议关闭。
+- Serverless 文件系统是临时的：Zotero 子 Note 持久保存在 Zotero 云端，但网页内未同步的草稿、反馈可能随函数实例回收而丢失。
+- 发布环境不读取本地 PDF 全文；核对原文请使用本地工作台。
+
 ## 手动检索
 
 ```bash

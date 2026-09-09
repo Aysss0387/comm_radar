@@ -302,6 +302,31 @@ def test_zotero_web_client_conflict_and_permission_errors_are_clear():
     client = ZoteroWebClient("12345", "secret-key", session=FakeSession([FakeResponse(412)]))
     with pytest.raises(ResearchWorkspaceError, match="412"):
         client.update_note("NOTE1", "<p>v2</p>", 1)
+    client = ZoteroWebClient("12345", "bad-key", session=FakeSession([FakeResponse(401)]))
+    with pytest.raises(ResearchWorkspaceError, match="401"):
+        client.collections()
+
+
+def test_zotero_web_client_paginates_beyond_first_page():
+    first_page = [{"key": f"C{i}", "data": {"name": f"col-{i}"}} for i in range(100)]
+    second_page = [{"key": "C100", "data": {"name": "col-100"}}]
+    session = FakeSession([FakeResponse(200, first_page), FakeResponse(200, second_page)])
+    client = ZoteroWebClient("12345", "secret-key", session=session)
+
+    collections = client.collections()
+
+    assert len(collections) == 101
+    assert session.requests[0]["params"]["start"] == 0
+    assert session.requests[1]["params"]["start"] == 100
+
+
+def test_zotero_web_client_reads_key_write_permission():
+    session = FakeSession([FakeResponse(200, {"access": {"user": {"library": True, "write": True}}})])
+    client = ZoteroWebClient("12345", "secret-key", session=session)
+
+    assert client.can_write() is True
+    assert session.requests[0]["url"] == "https://api.zotero.org/keys/current"
+    assert session.requests[0]["headers"]["Zotero-API-Key"] == "secret-key"
     client = ZoteroWebClient("12345", "secret-key", session=FakeSession([FakeResponse(403)]))
     with pytest.raises(ResearchWorkspaceError, match="写权限"):
         client.create_note("ITEM1", "<p>card</p>")
