@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import html
 import json
+import os
 import re
 import unicodedata
 from collections import defaultdict
@@ -27,6 +28,7 @@ MY_THOUGHTS_HEADING = "## My Thoughts"
 EVIDENCE_PATTERN = re.compile(r"(?:¶\s*\d+|段落\s*\d+|paragraph\s*\d+)", re.IGNORECASE)
 DEFAULT_ZOTERO_URL = "http://127.0.0.1:23119/api"
 DEFAULT_BBT_URL = "http://127.0.0.1:23119/better-bibtex/json-rpc"
+ZOTERO_WEB_API_URL = "https://api.zotero.org"
 CITEKEY_FORMULA = 'auth.lower + "-" + year + "-" + shorttitle(3,3)'
 NOTE_MARKER = "codex-research-card:v1"
 
@@ -284,7 +286,6 @@ class ZoteroLocalClient:
     def __init__(self, url: str = DEFAULT_ZOTERO_URL, session: Optional[Any] = None) -> None:
         self.url, self.session, self.last_version = url.rstrip("/"), session or requests.Session(), None
         self.server_id: Optional[str] = None
-        self.write_key: Optional[str] = None
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Tuple[Any, Mapping[str, str]]:
         try:
@@ -330,52 +331,91 @@ class ZoteroLocalClient:
         payload, _ = self._request("GET", f"/users/0/items/{attachment_key}/fulltext")
         return payload if isinstance(payload, dict) else {}
 
-    def _require_zotero_10(self) -> None:
-        if not self.last_version:
-            self.collections()
-        try:
-            major = int((self.last_version or "0").split(".", 1)[0])
-        except ValueError:
-            major = 0
-        if major < 10:
-            raise ResearchWorkspaceError("检测到 Zotero 9：自动写入子 Note 需要先升级 Zotero 10，并在首次请求时授权本地 API。")
 
-    def authorize_writes(self, app_name: str = "Codex Research Workbench") -> None:
-        self._require_zotero_10()
-        if not self.server_id:
-            raise ResearchWorkspaceError("Zotero 未返回实例标识，无法请求本地写入授权。")
-        try:
-            response = self.session.post(f"{self.url}/local/authorize", json={"appName": app_name}, headers={"Zotero-Server-ID": self.server_id}, timeout=10)
-            response.raise_for_status()
-            payload = response.json()
-        except requests.RequestException as error:
-            raise ResearchWorkspaceError(f"无法请求 Zotero 写入授权：{error}") from error
-        if not payload.get("key"):
-            raise ResearchWorkspaceError("Zotero 未授予本次写入授权。")
-        self.write_key = str(payload["key"])
+class ZoteroWebClient:
+    """Zotero Web API client: the reliable write channel for child notes.
 
-    def _write_headers(self, version: Optional[int] = None) -> Dict[str, str]:
-        if not self.write_key:
-            self.authorize_writes()
-        headers = {"Zotero-Server-ID": str(self.server_id), "Zotero-API-Key": str(self.write_key)}
+    The local API stays a read-only channel (attachments, fulltext). All note
+    writes go through api.zotero.org so they survive local API limitations and
+    show up after the desktop app syncs.
+    """
+
+    def __init__(self, user_id: str, api_key: str, base_url: str = ZOTERO_WEB_API_URL, session: Optional[Any] = None) -> None:
+        if not str(user_id).strip() or not str(api_key).strip():
+            raise ResearchWorkspaceError("缺少 ZOTERO_USER_ID 或 ZOTERO_API_KEY，无法使用 Zotero Web API。")
+        self.base_url = base_url.rstrip("/")
+        self.prefix = f"/users/{str(user_id).strip()}"
+        self.api_key = str(api_key).strip()
+        self.session = session or requests.Session()
+
+    def _request(self, method: str, path: str, version: Optional[int] = None, **kwargs: Any) -> Tuple[Any, Mapping[str, str]]:
+        headers = dict(kwargs.pop("headers", {}) or {})
+        headers.setdefault("Zotero-API-Key", self.api_key)
+        headers.setdefault("Zotero-API-Version", "3")
         if version is not None:
             headers["If-Unmodified-Since-Version"] = str(version)
-        return headers
+        try:
+            response = self.session.request(method, f"{self.base_url}{self.prefix}{path}", timeout=30, headers=headers, **kwargs)
+        except requests.RequestException as error:
+            raise ResearchWorkspaceError(f"无法连接 Zotero Web API：{error}") from error
+        if response.status_code == 403:
+            raise ResearchWorkspaceError("Zotero Web API 拒绝访问（403）：请确认 API Key 勾选了库的写权限（Allow write access）。")
+        if response.status_code == 412:
+            raise ResearchWorkspaceError("Zotero 云端笔记版本比本地记录更新（412）：请先在 Zotero 桌面端完成同步，再重试。")
+        if not response.ok:
+            raise ResearchWorkspaceError(f"Zotero Web API 请求失败（{response.status_code}）：{response.text.strip()[:300] or response.reason}")
+        try:
+            return response.json(), response.headers
+        except ValueError:
+            return None, response.headers
+
+    def collections(self) -> List[Dict[str, Any]]:
+        payload, _ = self._request("GET", "/collections", params={"limit": 100})
+        return list(payload or [])
+
+    def collection_by_name(self, name: str) -> Dict[str, Any]:
+        matches = [item for item in self.collections() if item.get("data", {}).get("name") == name]
+        if len(matches) != 1:
+            raise ResearchWorkspaceError(f"Zotero 云端{('没有' if not matches else '有多个')}名为“{name}”的集合。")
+        return matches[0]
+
+    def collection_items(self, collection_key: str) -> List[Dict[str, Any]]:
+        payload, _ = self._request("GET", f"/collections/{collection_key}/items", params={"limit": 100})
+        return [item for item in (payload or []) if item.get("data", {}).get("itemType") not in {"attachment", "note", "annotation"} and not item.get("data", {}).get("parentItem")]
+
+    def item(self, item_key: str) -> Dict[str, Any]:
+        payload, _ = self._request("GET", f"/items/{item_key}")
+        return payload if isinstance(payload, dict) else {}
+
+    def child_notes(self, parent_item_key: str) -> List[Dict[str, Any]]:
+        payload, _ = self._request("GET", f"/items/{parent_item_key}/children", params={"limit": 100})
+        return [item for item in (payload or []) if item.get("data", {}).get("itemType") == "note"]
 
     def create_note(self, parent_item_key: str, note_html: str) -> Tuple[str, int]:
-        self._require_zotero_10()
-        payload, _ = self._request("POST", "/users/0/items", json=[{"itemType": "note", "parentItem": parent_item_key, "note": note_html}], headers=self._write_headers())
+        payload, _ = self._request("POST", "/items", json=[{"itemType": "note", "parentItem": parent_item_key, "note": note_html}])
         result = (payload or {}).get("successful", {}).get("0") or (payload or {}).get("successful", {}).get(0)
         if not result or not result.get("key"):
-            raise ResearchWorkspaceError(f"Zotero 未创建子 Note：{payload}")
+            failed = (payload or {}).get("failed", {})
+            raise ResearchWorkspaceError(f"Zotero Web API 未创建子 Note：{failed or payload}")
         return str(result["key"]), int(result.get("version", 0))
 
     def update_note(self, note_key: str, note_html: str, version: Optional[int]) -> int:
-        self._require_zotero_10()
-        payload, response_headers = self._request("PATCH", f"/users/0/items/{note_key}", json={"note": note_html}, headers=self._write_headers(version))
-        if isinstance(payload, dict) and payload.get("version") is not None:
-            return int(payload["version"])
+        if version is None:
+            current = self.item(note_key)
+            version = int(current.get("data", {}).get("version", current.get("version", 0)) or 0)
+        _, response_headers = self._request("PATCH", f"/items/{note_key}", version=version, json={"note": note_html})
         return int(response_headers.get("Last-Modified-Version", version or 0))
+
+
+def zotero_web_client_from_env(session: Optional[Any] = None) -> ZoteroWebClient:
+    user_id = os.getenv("ZOTERO_USER_ID", "").strip()
+    api_key = os.getenv("ZOTERO_API_KEY", "").strip()
+    if not user_id or not api_key:
+        raise ResearchWorkspaceError(
+            "未配置 Zotero Web API：请在 https://www.zotero.org/settings/keys 创建带写权限的 API Key，"
+            "然后设置环境变量 ZOTERO_USER_ID（个人库 userID，可在同一页面查看）和 ZOTERO_API_KEY。"
+        )
+    return ZoteroWebClient(user_id, api_key, session=session)
 
 
 def _item_key(item: Mapping[str, Any]) -> str:
@@ -517,7 +557,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     preview.add_argument("--collection", required=True); preview.add_argument("--tag", default="⭐⭐⭐⭐⭐"); preview.add_argument("--cards-dir", default="research/cards"); preview.add_argument("--output"); preview.add_argument("--zotero-url", default=DEFAULT_ZOTERO_URL); preview.add_argument("--bbt-url", default=DEFAULT_BBT_URL)
     migrate = commands.add_parser("migrate-citekeys", help="确认后迁移 citekey 与 Markdown 卡片")
     migrate.add_argument("--preview", required=True); migrate.add_argument("--cards-dir", default="research/cards"); migrate.add_argument("--registry", default="research/zotero-sync/registry.json"); migrate.add_argument("--bbt-url", default=DEFAULT_BBT_URL); migrate.add_argument("--confirm", action="store_true", help="确认已审核预览并允许 Better BibTeX 改写 citekey")
-    sync = commands.add_parser("sync-zotero-notes", help="将卡片同步为 Zotero 子 Note")
+    sync = commands.add_parser("sync-zotero-notes", help="将卡片同步为 Zotero 子 Note（写入走 Zotero Web API）")
     sync.add_argument("--collection", required=True); sync.add_argument("--cards-dir", default="research/cards"); sync.add_argument("--registry", default="research/zotero-sync/registry.json"); sync.add_argument("--zotero-url", default=DEFAULT_ZOTERO_URL); sync.add_argument("--apply", action="store_true", help="实际写入 Zotero；默认只显示预览")
     args = parser.parse_args(argv)
     if args.command == "card-template":
@@ -539,7 +579,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not args.confirm:
             print("为保护既有引用，migrate-citekeys 需要明确传入 --confirm。"); return 2
         mapping = migrate_citekeys(json.loads(Path(args.preview).read_text(encoding="utf-8")), Path(args.cards_dir), BetterBibTeXClient(args.bbt_url), Path(args.registry)); print(json.dumps(mapping, ensure_ascii=False, indent=2)); return 0
-    report = sync_zotero_notes(Path(args.cards_dir), args.collection, Path(args.registry), ZoteroLocalClient(args.zotero_url), dry_run=not args.apply)
+    zotero_client = zotero_web_client_from_env() if args.apply else ZoteroLocalClient(args.zotero_url)
+    report = sync_zotero_notes(Path(args.cards_dir), args.collection, Path(args.registry), zotero_client, dry_run=not args.apply)
     print(json.dumps(report, ensure_ascii=False, indent=2)); return 0
 
 

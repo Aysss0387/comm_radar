@@ -61,7 +61,7 @@ def render_paper(rank: int, paper: Paper) -> List[str]:
         f"- 推荐理由：{reason}",
         f"- 链接：{' | '.join(links) if links else '暂无'}",
         "",
-        f"摘要：{abstract or '暂无公开摘要。'}",
+        f"摘要：{abstract or '暂无公开摘要（已尝试 OpenAlex、Crossref、Semantic Scholar 三个来源）。'}",
         "",
     ]
 

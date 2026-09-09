@@ -5,6 +5,7 @@ import pytest
 
 from comm_paper_radar.research_workspace import (
     ResearchWorkspaceError,
+    ZoteroWebClient,
     build_atlas,
     generate_citekey_preview,
     migrate_citekeys,
@@ -13,6 +14,7 @@ from comm_paper_radar.research_workspace import (
     render_zotero_note,
     sync_zotero_notes,
     validate_card,
+    zotero_web_client_from_env,
 )
 
 
@@ -241,6 +243,68 @@ def test_failed_note_update_does_not_write_registry(tmp_path: Path):
     with pytest.raises(ResearchWorkspaceError, match="concurrent edit"):
         sync_zotero_notes(cards, "Framing", registry, FailingZotero([]), dry_run=False)
     assert json.loads(registry.read_text(encoding="utf-8")) == original
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, payload=None, headers=None):
+        self.status_code = status_code
+        self._payload = payload
+        self.headers = headers or {}
+        self.ok = status_code < 400
+        self.text = json.dumps(payload) if payload is not None else ""
+        self.reason = "reason"
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("no json")
+        return self._payload
+
+
+class FakeSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    def request(self, method, url, **kwargs):
+        self.requests.append({"method": method, "url": url, **kwargs})
+        return self.responses.pop(0)
+
+
+def test_zotero_web_client_requires_credentials(monkeypatch):
+    monkeypatch.delenv("ZOTERO_USER_ID", raising=False)
+    monkeypatch.delenv("ZOTERO_API_KEY", raising=False)
+    with pytest.raises(ResearchWorkspaceError, match="ZOTERO_USER_ID"):
+        zotero_web_client_from_env()
+
+
+def test_zotero_web_client_creates_note_with_auth_headers():
+    session = FakeSession([FakeResponse(200, {"successful": {"0": {"key": "NOTE1", "version": 7}}})])
+    client = ZoteroWebClient("12345", "secret-key", session=session)
+
+    note_key, version = client.create_note("ITEM1", "<p>card</p>")
+
+    assert (note_key, version) == ("NOTE1", 7)
+    sent = session.requests[0]
+    assert sent["url"] == "https://api.zotero.org/users/12345/items"
+    assert sent["headers"]["Zotero-API-Key"] == "secret-key"
+    assert sent["json"][0]["parentItem"] == "ITEM1"
+
+
+def test_zotero_web_client_update_sends_version_and_reads_new_version():
+    session = FakeSession([FakeResponse(204, None, {"Last-Modified-Version": "9"})])
+    client = ZoteroWebClient("12345", "secret-key", session=session)
+
+    assert client.update_note("NOTE1", "<p>v2</p>", 8) == 9
+    assert session.requests[0]["headers"]["If-Unmodified-Since-Version"] == "8"
+
+
+def test_zotero_web_client_conflict_and_permission_errors_are_clear():
+    client = ZoteroWebClient("12345", "secret-key", session=FakeSession([FakeResponse(412)]))
+    with pytest.raises(ResearchWorkspaceError, match="412"):
+        client.update_note("NOTE1", "<p>v2</p>", 1)
+    client = ZoteroWebClient("12345", "secret-key", session=FakeSession([FakeResponse(403)]))
+    with pytest.raises(ResearchWorkspaceError, match="写权限"):
+        client.create_note("ITEM1", "<p>card</p>")
 
 
 def test_zotero_note_renderer_requires_parent_key(tmp_path: Path):

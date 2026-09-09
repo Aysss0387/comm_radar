@@ -52,6 +52,9 @@ class FakeClient:
     def enrich_semantic_scholar(self, papers, batch_size=100):
         return papers
 
+    def backfill_abstracts(self, papers, delay_seconds=0.0):
+        return papers
+
 
 def test_weekly_generates_report_csv_and_recommendation_history(tmp_path: Path):
     cfg = load_settings("config/settings.yml")

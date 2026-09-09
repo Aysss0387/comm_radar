@@ -117,21 +117,34 @@ exclude_title_patterns:
   - 勘误
   - 目录
 
+# 期刊分层依据 2026 年 6 月发布的 JCR（2025 Impact Factor / Communication 学科排名）
 authority_sources:
-  top_international:
+  tier_1:
     score: 100
     names:
-      - Journal of Communication
-      - New Media & Society
-      - Journal of Computer-Mediated Communication
-      - Communication Research
-      - Human Communication Research
-      - Information, Communication & Society
-      - Digital Journalism
-      - Political Communication
-      - Public Opinion Quarterly
-      - Social Media + Society
-      - Computers in Human Behavior
+      - name: Journal of Computer-Mediated Communication
+        if_2025: 7.4
+        rank: "Communication 4/227"
+      - name: Political Communication
+        if_2025: 5.9
+      - name: Journal of Communication
+        if_2025: 5.3
+        rank: "Communication 11/227"
+      - name: New Media & Society
+      - name: Communication Research
+  tier_2:
+    score: 92
+    names:
+      - name: Human Communication Research
+        if_2025: 3.4
+        rank: "Communication 29/227"
+      - name: Information, Communication & Society
+      - name: Digital Journalism
+      - name: Communication Methods and Measures
+      - name: Communication Theory
+      - name: Public Opinion Quarterly
+      - name: Social Media + Society
+      - name: Computers in Human Behavior
   domestic:
     score: 95
     names:
@@ -159,3 +172,77 @@ authority_sources:
       - Nature Human Behaviour
       - Proceedings of the National Academy of Sciences
       - PNAS
+
+# 每日 3 篇精读推荐：三个槽位各自的信号词（不是简单 IF 排序）
+daily:
+  count: 3
+  window_days: 14
+  fallback_window_months: 4
+  slots:
+    relevance:
+      label: "当前研究最相关"
+      description: "诈骗/受害叙事、framing、评论反应、数字媒体、AI 与人机传播"
+      terms:
+        - scam
+        - fraud
+        - phishing
+        - victim
+        - victimization
+        - framing
+        - frame
+        - narrative
+        - storytelling
+        - comment
+        - user comments
+        - audience response
+        - digital media
+        - social media
+        - human-machine communication
+        - AI-mediated communication
+        - generative AI
+        - chatbot
+        - misinformation
+        - risk communication
+        - warning
+    theory:
+      label: "理论值得学"
+      description: "理论框架、概念模型、机制解释与论证结构值得模仿的论文"
+      terms:
+        - theory
+        - theoretical framework
+        - theoretical model
+        - conceptual model
+        - conceptual framework
+        - theorizing
+        - theoretical extension
+        - integrates
+        - mechanism
+        - mediation model
+        - moderation
+        - typology
+        - boundary conditions
+    method:
+      label: "方法/前沿"
+      description: "计算传播、LLM coding、内容分析、实验、因果推断、网络分析等"
+      terms:
+        - computational
+        - computational communication
+        - large language model
+        - LLM
+        - machine learning
+        - natural language processing
+        - text as data
+        - topic model
+        - content analysis
+        - automated content analysis
+        - experiment
+        - experimental design
+        - causal inference
+        - difference-in-differences
+        - regression discontinuity
+        - network analysis
+        - social network
+        - agent-based
+        - simulation
+        - validity
+        - measurement

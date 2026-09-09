@@ -11,9 +11,11 @@
     <aside class="sidebar" aria-label="主导航">
       <div class="brand"><span class="brand-mark">◒</span><div><strong>研究工作台</strong><small>reading room · 01</small></div></div>
       <nav class="nav-tabs">
-        <button class="nav-tab active" data-view="library"><span>01</span>精读桌</button>
-        <button class="nav-tab" data-view="compare"><span>02</span>比较台</button>
-        <button class="nav-tab" data-view="map"><span>03</span>研究地图</button>
+        <button class="nav-tab active" data-view="daily"><span>01</span>今日精读</button>
+        <button class="nav-tab" data-view="library"><span>02</span>精读桌</button>
+        <button class="nav-tab" data-view="compare"><span>03</span>比较台</button>
+        <button class="nav-tab" data-view="map"><span>04</span>研究地图</button>
+        <button class="nav-tab" data-view="history"><span>05</span>推荐历史</button>
       </nav>
       <div class="sidebar-note"><span class="eyebrow">当前方式</span><p>Markdown 是主版本。Zotero 提供文献与证据来源。</p></div>
       <button class="settings-link" id="openSettings">⚙ 设置与连接</button>
@@ -26,7 +28,12 @@
         <div class="topbar-actions"><span id="saveStatus" class="save-status">本地工作台</span><button class="icon-button" id="refreshButton" aria-label="刷新资料">↻</button><button class="avatar" id="openSettingsSmall" aria-label="打开设置">A</button></div>
       </header>
 
-      <section id="libraryView" class="view active">
+      <section id="dailyView" class="view active">
+        <div class="view-heading"><div><span class="eyebrow">DAILY FEED / 今日精读</span><h1>每天三篇，按你的坐标系挑。</h1><p>① 当前研究最相关 ② 理论值得学 ③ 方法/前沿。不是 IF 排行榜，是你的 Personal Communication Research Feed。</p></div><div class="heading-stats"><div><label class="daily-date-label" for="dailyDateSelect">推荐日期</label><select id="dailyDateSelect" aria-label="选择推荐日期"></select></div></div></div>
+        <div id="dailyContent" class="daily-grid"><p class="muted">正在读取每日推荐…</p></div>
+      </section>
+
+      <section id="libraryView" class="view">
         <div class="view-heading"><div><span class="eyebrow">READING DESK / 精读桌</span><h1>把文献读成自己的地图。</h1><p>从一张证据卡开始，留下你的问题、判断和下一步。</p></div><div class="heading-stats"><div><strong id="cardCount">—</strong><span>篇已建卡</span></div><div><strong id="questionCount">—</strong><span>个待解决问题</span></div></div></div>
         <div class="toolbar"><label class="search-field"><span>⌕</span><input id="searchInput" type="search" placeholder="搜索标题、理论、方法或正文…" aria-label="搜索文献卡"></label><select id="statusFilter" aria-label="按阅读状态筛选"><option value="">全部状态</option><option>未建卡</option><option>待读</option><option>初读</option><option>精读中</option><option>精读完成</option></select><button class="button subtle" id="compareSelected">加入比较 <b id="compareCount">0</b></button></div>
         <div class="desk-grid">
@@ -39,6 +46,11 @@
       <section id="compareView" class="view"><div class="view-heading compact"><div><span class="eyebrow">COMPARISON TABLE / 比较台</span><h1>让差异显形。</h1><p>并排阅读研究问题、理论、方法与发现。综合分析会单独标记。</p></div><button class="button" id="runCompareAI">✦ AI 比较</button></div><div id="compareContent" class="compare-empty"><span class="empty-glyph">＋</span><h2>从精读桌选择 2–4 篇论文</h2><p>勾选论文后点击“加入比较”。</p></div></section>
 
       <section id="mapView" class="view"><div class="view-heading compact"><div><span class="eyebrow">RESEARCH ATLAS / 研究地图</span><h1>理论如何遇见方法。</h1><p>矩阵显示论文中同时出现的理论与方法，不将共现解释为因果关系。</p></div><div class="atlas-metric"><strong id="mapCount">—</strong><span>篇有效精读卡</span></div></div><div class="atlas-layout"><div class="atlas-card"><div class="atlas-card-head"><h2>理论 × 方法</h2><span class="muted">点击单元格查看论文</span></div><div id="matrix" class="matrix-wrap"></div></div><aside class="atlas-side"><div class="atlas-card-head"><h2>信息待补全</h2></div><div id="incompleteList" class="incomplete-list"></div></aside></div><div class="method-strip"><div class="atlas-card-head"><h2>方法银行</h2><span class="muted">当前集合中的研究设计</span></div><div id="methodList" class="method-list"></div></div></section>
+      <section id="historyView" class="view">
+        <div class="view-heading compact"><div><span class="eyebrow">FEED HISTORY / 推荐历史</span><h1>让推荐越来越懂你。</h1><p>浏览过往每日推荐；标记「有用/无用」会轻度调整之后的选文权重。</p></div></div>
+        <div class="toolbar"><select id="historySlotFilter" aria-label="按槽位筛选"><option value="">全部槽位</option><option value="relevance">当前研究最相关</option><option value="theory">理论值得学</option><option value="method">方法/前沿</option></select><select id="historyReadFilter" aria-label="按已读状态筛选"><option value="">全部状态</option><option value="read">已读</option><option value="unread">未读</option></select><label class="search-field"><span>⌕</span><input id="historyVenueInput" type="search" placeholder="按期刊筛选…" aria-label="按期刊筛选"></label></div>
+        <div id="historyContent" class="daily-grid"><p class="muted">正在读取推荐历史…</p></div>
+      </section>
     </main>
   </div>
 

@@ -1,3 +1,16 @@
+Metadata-Version: 2.4
+Name: comm-paper-radar
+Version: 0.1.0
+Summary: Weekly communication and computational communication paper radar.
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: Flask>=3.0.0
+Requires-Dist: Markdown>=3.6
+Requires-Dist: PyYAML>=6.0.1
+Requires-Dist: requests>=2.31.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+
 # 传播学/计算传播论文雷达
 
 轻量自动化系统，用公开 API 抓取传播学、计算传播、反诈与人工智能传播相关论文元数据：每周输出 10 篇周报，每天输出 3 篇按「① 当前研究最相关 ② 理论值得学 ③ 方法/前沿」三槽位配置的精读推荐（Personal Communication Research Feed），并配套本地 Zotero 科研工作台。期刊分层依据 2026 年 6 月发布的 JCR（如 JCMC 2025 IF 7.4、Communication 排名 4/227）。
