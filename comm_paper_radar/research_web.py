@@ -411,6 +411,7 @@ class DailyStore:
         self.feedback_path = base_dir / "data" / "feedback.json"
         self.database = database or ResearchDatabase()
         self._lock = threading.RLock()
+        self._generating: set = set()
 
     def _records(self) -> List[Dict[str, Any]]:
         if not self.feed_path.exists():
@@ -453,6 +454,17 @@ class DailyStore:
         existing = self.day(day)
         if len(existing["papers"]) >= 3:
             return {**existing, "generated": False}
+        with self._lock:
+            if day in self._generating:
+                return {**existing, "generated": False, "generating": True}
+            self._generating.add(day)
+        try:
+            return self._generate_for(day)
+        finally:
+            with self._lock:
+                self._generating.discard(day)
+
+    def _generate_for(self, day: str) -> Dict[str, Any]:
         settings = load_settings(str(self.base_dir / "config" / "settings.yml"))
         excluded = self.database.excluded_paper_ids() if self.database.available else set()
         records = run_daily(settings, self.base_dir, day=day, dry_run=True, excluded_keys=excluded)
@@ -588,7 +600,7 @@ class AIService:
             detail = response.text[:300].strip()
         prefix = f"服务返回 {response.status_code}"
         if response.status_code == 401:
-            return f"{prefix}：API Key 无效、已过期或不属于这个服务。"
+            return f"{prefix}：API Key ��效、已过期或不属于这个服务。"
         if response.status_code == 404:
             return f"{prefix}：接口地址或模型名不正确。DeepSeek 应填写 https://api.deepseek.com。"
         if response.status_code == 429:
