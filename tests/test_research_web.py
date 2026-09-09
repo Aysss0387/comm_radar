@@ -102,7 +102,9 @@ def test_web_compare_and_map_return_traceable_data(tmp_path: Path):
     client, headers = client_with_token(tmp_path)
     compare = client.post("/api/compare", headers=headers, json={"collection": "framing", "citekeys": ["6FAIDITS", "Second"]})
     assert compare.status_code == 200
-    assert [row["label"] for row in compare.get_json()["rows"]][:2] == ["研究问题", "理论与概念"]
+    rows = compare.get_json()["rows"]
+    assert [row["label"] for row in rows] == ["研究问题"]  # 全为“未报告”的维度不再展示
+    assert rows[0]["values"] == ["First question.", "Second question."]
     atlas = client.get("/api/map?collection=framing", headers=headers)
     assert atlas.status_code == 200
     data = atlas.get_json()

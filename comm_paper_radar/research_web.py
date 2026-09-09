@@ -69,14 +69,20 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+SECTION_HEADING_RE = re.compile(r"^#{1,2}\s+(.+?)\s*$", re.MULTILINE)
+SUBHEADING_RE = re.compile(r"^###\s+(.+?)\s*$", re.MULTILINE)
+
+
 def _split_sections(body: str) -> Dict[str, str]:
-    matches = list(HEADING_RE.finditer(body))
+    """Split on H1/H2 only; H3 subheadings stay inside their parent section as highlighted lines."""
+    matches = list(SECTION_HEADING_RE.finditer(body))
     sections: Dict[str, str] = {}
     for index, match in enumerate(matches):
         title = match.group(1).strip()
         start = match.end()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
-        sections[title] = body[start:end].strip()
+        content = SUBHEADING_RE.sub(lambda sub: f"◆ {sub.group(1)}", body[start:end]).strip()
+        sections[title] = content
     return sections
 
 
@@ -100,6 +106,27 @@ def _parse_ai_json(content: str) -> Dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("AI 返回的 JSON 不是对象。")
     return parsed
+
+
+def _theory_method_prompt(body: str) -> str:
+    return f"""从下面的传播学论文精读卡内容中，抽取论文实际使用的理论和研究方法。输出一个 JSON 对象（不要解释、不要代码块），字段：
+{{"theories": ["理论名称，用领域通用的简短中文名，如：框架理论、议程设置、第三人效果；最多 4 个；没有明确理论则为空数组"], "methods": ["方法名称，用通用的简短中文名，如：问卷调查、实验、内容分析、深度访谈、计算文本分析；最多 4 个"]}}
+
+精读卡内容：
+{body[:6000]}"""
+
+
+def _daily_review_prompt(paper: Mapping[str, Any]) -> str:
+    abstract = str(paper.get("abstract") or "").strip() or "（无公开摘要，请基于标题与期刊推断，并明确说明是推断）"
+    return f"""你是资深传播学期刊审稿人兼研究导师。请针对下面这篇每日推荐论文，输出一个 JSON 对象（不要解释文字、不要代码块），字段：
+{{"abstract_zh": "摘要的完整中文翻译，保持学术准确；若无摘要则为空字符串", "verdict": "推荐评语：两三句话，说明这篇论文最值得读的理由和适合谁读", "highlights": "研究亮点：选题新意、数据独特性或发现的贡献，一两句", "method_review": "方法评价：设计是否严谨、证据强度如何，一两句", "relevance": "对传播学研究者的可借鉴之处：理论对话、测量、写作或选题上能学什么，一两句", "caution": "阅读提醒：局限、边界条件或需要谨慎解读的地方，一两句"}}
+
+论文标题：{paper.get('title', '')}
+作者：{'; '.join(paper.get('authors', [])[:8]) or '未知'}
+期刊：{paper.get('venue', '') or '未知'}
+发表时间：{paper.get('publication_date', '') or '未知'}
+推荐槽位：{paper.get('slot_label', '')}
+摘要原文：{abstract}"""
 
 
 def _enrichment_prompt(paper: Mapping[str, Any]) -> str:
@@ -489,15 +516,25 @@ class CardStore:
             raise ValueError("比较需要选择 2 到 4 篇论文。")
         cards = [self.detail(key, collection) for key in citekeys]
         dimensions = [
-            ("研究问题", "Research Questions / Hypotheses"),
-            ("理论与概念", "Theory and Key Constructs"),
-            ("操作化", "Operationalization"),
-            ("数据与样本", "Research Context, Data, and Sample"),
-            ("方法", "Method and Analysis"),
-            ("发现", "Main Findings"),
-            ("局限", "Contributions and Limitations"),
+            ("阅读概览", ["阅读概览"]),
+            ("研究问题", ["研究问题", "Research Questions / Hypotheses"]),
+            ("理论与概念", ["理论与概念", "Theory and Key Constructs"]),
+            ("操作化", ["操作化", "Operationalization"]),
+            ("数据与样本", ["数据与样本", "Research Context, Data, and Sample"]),
+            ("方法", ["方法", "Method and Analysis"]),
+            ("发现", ["主要发现", "Main Findings"]),
+            ("局限", ["贡献与局限", "Contributions and Limitations"]),
         ]
-        rows = [{"label": label, "values": [card["sections"].get(section, "未报告") for card in cards]} for label, section in dimensions]
+
+        def pick(card: Dict[str, Any], names: List[str]) -> str:
+            for name in names:
+                value = str(card["sections"].get(name) or "").strip()
+                if value and value != "本次材料未覆盖。":
+                    return value
+            return "未报告"
+
+        rows = [{"label": label, "values": [pick(card, names) for card in cards]} for label, names in dimensions]
+        rows = [row for row in rows if any(value != "未报告" for value in row["values"])]
         return {"cards": [card["summary"] for card in cards], "rows": rows}
 
     def map_data(self, collection: str) -> Dict[str, Any]:
@@ -883,9 +920,37 @@ def create_app(base_dir: Path) -> Flask:
     def collections() -> Any:
         return jsonify({"collections": store.collections()})
 
+    def _attach_daily_reviews(papers: List[Dict[str, Any]]) -> None:
+        reviews = store.enrichment_map()
+        for paper in papers:
+            review = reviews.get(f"daily:{paper.get('dedupe_key')}")
+            if review:
+                paper["ai_review"] = review
+
     @app.get("/api/daily")
     def daily_feed() -> Any:
-        return jsonify(daily.day(request.args.get("date")))
+        result = daily.day(request.args.get("date"))
+        _attach_daily_reviews(result.get("papers", []))
+        return jsonify(result)
+
+    @app.post("/api/daily/analyze")
+    def daily_analyze() -> Any:
+        payload = request.get_json(force=True)
+        day_value = str(payload.get("date") or "").strip()
+        dedupe_key = str(payload.get("dedupe_key") or "").strip()
+        if not day_value or not dedupe_key:
+            return jsonify({"error": "缺少日期或论文标识。"}), 400
+        paper = next((entry for entry in daily.day(day_value).get("papers", []) if entry.get("dedupe_key") == dedupe_key), None)
+        if not paper:
+            return jsonify({"error": "找不到这条每日推荐。"}), 404
+        try:
+            content, _usage = ai._chat(_daily_review_prompt(paper), system="Return only valid JSON, no markdown.")
+            data = _parse_ai_json(content)
+            data["generated_at"] = _utc_now()
+            store.save_enrichment(f"daily:{dedupe_key}", "daily", data)
+            return jsonify({"ai_review": data})
+        except (RuntimeError, requests.RequestException, ValueError) as error:
+            return jsonify({"error": str(error)}), 502
 
     @app.post("/api/daily/generate")
     def generate_daily_feed() -> Any:
@@ -897,6 +962,7 @@ def create_app(base_dir: Path) -> Flask:
     @app.get("/api/daily/history")
     def daily_history() -> Any:
         papers = daily.history(request.args.get("slot", ""), request.args.get("venue", ""), request.args.get("read_state", ""))
+        _attach_daily_reviews(papers)
         return jsonify({"dates": daily.dates(), "papers": papers})
 
     @app.post("/api/daily/feedback")
@@ -1107,6 +1173,15 @@ def create_app(base_dir: Path) -> Flask:
         snapshot = json.loads(snapshot_file.read_text(encoding="utf-8"))
         document = card_document(paper, {**snapshot, "path": snapshot_info.get("path", snapshot.get("path", ""))}, str(task_data["result"]))
         metadata, body = split_front_matter(document)
+        try:
+            content, _usage = ai._chat(_theory_method_prompt(body), system="Return only valid JSON, no markdown.")
+            extracted = _parse_ai_json(content)
+            metadata["theories"] = [{"name": str(name)} for name in extracted.get("theories", []) if name][:4]
+            metadata["methods"] = [{"name": str(name)} for name in extracted.get("methods", []) if name][:4]
+            document = render_front_matter(metadata, body)
+        except (RuntimeError, requests.RequestException, ValueError):
+            pass  # 抽取失败时保留空标注，稍后可在卡片里手动补
+
         if database.available:
             stored_metadata = {**metadata, "_evidence_snapshot": snapshot}
             database.save_reading_card(
