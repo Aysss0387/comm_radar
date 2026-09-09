@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "uv run --with-requirements requirements.txt python -m comm_paper_radar.research_web --host 0.0.0.0 --port ${DEV_PORT:-3000}",
+    "dev": "set -a && [ ! -f /vercel/share/.env.project ] || . /vercel/share/.env.project; set +a; ZOTERO_USE_WEB_API=1 uv run --with-requirements requirements.txt python -m comm_paper_radar.research_web --host 0.0.0.0 --port ${DEV_PORT:-3000}",
     "start": "uv run --with-requirements requirements.txt python -m comm_paper_radar.research_web --host 0.0.0.0 --port ${PORT:-3000}",
     "test": "uv run --with-requirements requirements.txt pytest -q"
   }

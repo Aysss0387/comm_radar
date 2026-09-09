@@ -48,8 +48,12 @@ EVIDENCE_LOCATOR_RE = re.compile(r"(?P<citekey>[^\s\[\]]+)\s*(?:¶|段落|paragr
 
 
 def _published() -> bool:
-    """True when serving from Vercel: Zotero reads go to the Web API, not localhost."""
     return bool(os.environ.get("VERCEL"))
+
+
+def _use_zotero_web_api() -> bool:
+    """Use Zotero Cloud on Vercel and in v0 Preview; regular local runs keep Desktop API support."""
+    return _published() or os.environ.get("ZOTERO_USE_WEB_API") == "1"
 
 
 def _utc_now() -> str:
@@ -87,7 +91,7 @@ class CardStore:
     def collections(self) -> List[str]:
         values = {str(meta.get("collection")) for path in self.cards_dir.glob("*.md") for meta in [self._load(path)[0]] if meta.get("collection")}
         try:
-            client = zotero_web_client_from_env() if _published() else ZoteroLocalClient()
+            client = zotero_web_client_from_env() if _use_zotero_web_api() else ZoteroLocalClient()
             values.update(str(item.get("data", {}).get("name")) for item in client.collections() if item.get("data", {}).get("name"))
         except Exception:
             pass
@@ -159,11 +163,11 @@ class CardStore:
     def _uncarded_zotero_items(self, collection: str, query: str, status: Optional[str], theory: Optional[str], method: Optional[str], card_item_keys: set) -> List[Dict[str, Any]]:
         """Show Zotero papers that have no Markdown card yet, without creating one."""
         try:
-            zotero = zotero_web_client_from_env() if _published() else ZoteroLocalClient()
+            zotero = zotero_web_client_from_env() if _use_zotero_web_api() else ZoteroLocalClient()
             zotero_collection = zotero.collection_by_name(collection)
             items = zotero.collection_items(str(zotero_collection.get("key")))
             keys = [str(item.get("key") or item.get("data", {}).get("key") or "") for item in items]
-            citekeys = BetterBibTeXClient().citationkeys(keys) if keys and not _published() else {}
+            citekeys = BetterBibTeXClient().citationkeys(keys) if keys and not _use_zotero_web_api() else {}
         except Exception:
             return []
         result = []
@@ -713,7 +717,7 @@ def create_app(base_dir: Path) -> Flask:
     @app.get("/api/settings")
     def settings() -> Any:
         web_configured = bool(os.getenv("ZOTERO_USER_ID", "").strip() and os.getenv("ZOTERO_API_KEY", "").strip())
-        if _published():
+        if _use_zotero_web_api():
             zotero_status: Dict[str, Any] = {"mode": "web"}
             try:
                 client = zotero_web_client_from_env()
