@@ -35,6 +35,7 @@ def run_weekly(
         int(settings.get("weekly_domestic_count", 2)),
         int(settings.get("weekly_international_count", 8)),
     )
+    client.backfill_abstracts(selected)
     report_path = default_weekly_report_path(base_dir)
 
     if not dry_run:

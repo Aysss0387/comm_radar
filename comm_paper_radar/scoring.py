@@ -6,11 +6,39 @@ from .models import Paper
 from .utils import has_chinese, normalize_text, parse_date
 
 
+def source_entries(group: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Normalize authority source names: plain strings or dicts with JCR metadata."""
+    entries = []
+    for item in group.get("names", []) or []:
+        if isinstance(item, dict):
+            name = str(item.get("name", "")).strip()
+            if name:
+                entries.append({"name": name, "if_2025": item.get("if_2025"), "rank": item.get("rank")})
+        else:
+            name = str(item).strip()
+            if name:
+                entries.append({"name": name, "if_2025": None, "rank": None})
+    return entries
+
+
+def venue_meta(venue: str, settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Look up a venue's tier group, score, and JCR metadata for card badges."""
+    venue_norm = normalize_text(venue)
+    if not venue_norm:
+        return {}
+    for group_name, group in (settings.get("authority_sources") or {}).items():
+        for entry in source_entries(group):
+            name_norm = normalize_text(entry["name"])
+            if name_norm and (name_norm == venue_norm or name_norm in venue_norm or venue_norm in name_norm):
+                return {"group": group_name, "score": float(group.get("score", 70)), "if_2025": entry["if_2025"], "rank": entry["rank"], "name": entry["name"]}
+    return {}
+
+
 def classify_region(paper: Paper, settings: Dict[str, Any]) -> str:
     domestic_names = []
     for group_name, group in (settings.get("authority_sources") or {}).items():
         if group_name == "domestic":
-            domestic_names.extend(group.get("names", []))
+            domestic_names.extend(entry["name"] for entry in source_entries(group))
     venue_text = normalize_text(paper.venue)
     if "CN" in set(paper.institution_countries):
         return "domestic"
@@ -88,8 +116,8 @@ def authority_score_for(paper: Paper, settings: Dict[str, Any]) -> float:
     best = 45.0
     for group in (settings.get("authority_sources") or {}).values():
         group_score = float(group.get("score", 70))
-        for name in group.get("names", []):
-            name_norm = normalize_text(name)
+        for entry in source_entries(group):
+            name_norm = normalize_text(entry["name"])
             if name_norm and (name_norm == venue or name_norm in venue or venue in name_norm):
                 best = max(best, group_score)
     return min(100.0, best)

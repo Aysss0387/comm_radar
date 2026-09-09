@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from html import unescape
 from typing import Dict, Iterable, List, Optional
 
@@ -12,6 +13,7 @@ from .utils import abstract_from_openalex, env_headers, normalize_doi, slug_titl
 OPENALEX_URL = "https://api.openalex.org/works"
 CROSSREF_URL = "https://api.crossref.org/works"
 SEMANTIC_SCHOLAR_BATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/batch"
+SEMANTIC_SCHOLAR_PAPER_URL = "https://api.semanticscholar.org/graph/v1/paper"
 
 
 class SourceClient:
@@ -145,6 +147,57 @@ class SourceClient:
                     paper.oa_url = oa.get("url") or ""
                 if not paper.venue:
                     paper.venue = item.get("venue") or ""
+        return papers
+
+    def crossref_abstract(self, doi: str) -> str:
+        """Fetch and strip a JATS abstract from Crossref for a single DOI."""
+        if not doi:
+            return ""
+        try:
+            response = self.session.get(f"{CROSSREF_URL}/{doi}", headers=env_headers(self.contact_email), timeout=30)
+        except requests.RequestException:
+            return ""
+        if response.status_code >= 400:
+            return ""
+        try:
+            message = response.json().get("message", {})
+        except ValueError:
+            return ""
+        return strip_crossref_abstract(str(message.get("abstract") or ""))
+
+    def semantic_scholar_abstract(self, doi: str) -> str:
+        if not doi:
+            return ""
+        headers = env_headers(self.contact_email)
+        if self.semantic_scholar_api_key:
+            headers["x-api-key"] = self.semantic_scholar_api_key
+        try:
+            response = self.session.get(f"{SEMANTIC_SCHOLAR_PAPER_URL}/DOI:{doi}", params={"fields": "abstract"}, headers=headers, timeout=30)
+        except requests.RequestException:
+            return ""
+        if response.status_code >= 400:
+            return ""
+        try:
+            return clean_text(str(response.json().get("abstract") or ""))
+        except ValueError:
+            return ""
+
+    def backfill_abstracts(self, papers: List[Paper], delay_seconds: float = 0.4) -> List[Paper]:
+        """Fill missing abstracts for FINAL selections only: Crossref then Semantic Scholar.
+
+        Kept to the shortlisted papers so API quotas stay small; each miss is
+        rate-limited with a short delay.
+        """
+        for paper in papers:
+            if paper.abstract.strip() or not paper.doi:
+                continue
+            abstract = self.crossref_abstract(paper.doi)
+            if not abstract:
+                time.sleep(delay_seconds)
+                abstract = self.semantic_scholar_abstract(paper.doi)
+            if abstract:
+                paper.abstract = abstract
+            time.sleep(delay_seconds)
         return papers
 
 

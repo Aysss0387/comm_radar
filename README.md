@@ -1,6 +1,6 @@
 # 传播学/计算传播论文雷达
 
-轻量自动化系统，用公开 API 每周抓取最近四个月传播学、计算传播、反诈与人工智能传播相关论文元数据，输出 Markdown 周报与 CSV 累计论文库。
+轻量自动化系统，用公开 API 抓取传播学、计算传播、反诈与人工智能传播相关论文元数据：每周输出 10 篇周报，每天输出 3 篇按「① 当前研究最相关 ② 理论值得学 ③ 方法/前沿」三槽位配置的精读推荐（Personal Communication Research Feed），并配套本地 Zotero 科研工作台。期刊分层依据 2026 年 6 月发布的 JCR（如 JCMC 2025 IF 7.4、Communication 排名 4/227）。
 
 ## 快速开始
 
@@ -19,6 +19,26 @@ python -m comm_paper_radar run
 - `reports/YYYY-WW.md`: 每周精选 10 篇，国内 2 篇、国外 8 篇。
 - `data/papers.csv`: 累计论文库。
 - `data/recommended.csv`: 历史推荐记录，自动避重。
+
+## 每日 3 篇精读推荐
+
+每天按三个槽位各选一篇（不是 IF 从高到低前三）：
+
+1. **当前研究最相关**：诈骗/受害叙事、framing、narrative、评论反应、数字媒体、AI/HMC。
+2. **理论值得学**：理论框架、RQ 或论证结构值得模仿的论文，tier 1/2 期刊加权。
+3. **方法/前沿**：计算传播、LLM coding、内容分析、实验、因果推断、网络分析等；Communication Methods and Measures 与计算类会议加权。
+
+每篇经 LLM 生成结构化解读：为什么值得读 → RQ/理论 → 数据与方法 → 核心发现 → 最值得精读的部分 → 可直接借鉴的思路 → 精读优先级 ⭐（1–5）。无摘要时基于标题与期刊推断并明确标注；未配置 `LLM_API_KEY` 时优雅降级为规则理由，管线不中断。
+
+~~~bash
+# 生成今日推荐（写入 data/daily_feed.jsonl 与 reports/daily/YYYY-MM-DD.md）
+python -m comm_paper_radar daily
+
+# 只看选文、跳过 LLM 解读
+python -m comm_paper_radar daily --skip-llm --dry-run
+~~~
+
+推荐历史保存在 `data/daily_feed.jsonl`，自动与周报及历史每日推荐避重；近两周无合适新文的槽位回落到近四个月并标注「回溯推荐」。在本地工作台标记「有用/无用」会写入 `data/feedback.json`，轻度调整后续选文的期刊权重。
 
 ## Zotero 日常科研工作台
 
@@ -62,7 +82,14 @@ auth.lower + "-" + year + "-" + shorttitle(3,3)
 
 `planned_citekey` 是按上述公式的可读预估；Better BibTeX 会在实际迁移时处理转写和重名后缀，并以其返回的值为最终 citekey。
 
-把卡片显示在 Zotero 条目下需要 **Zotero 10 或更高版本**。先完成升级、保持 Zotero 运行，并在第一次 `--apply` 时接受 Zotero 的本地 API 授权提示。默认命令只预览，不会写入任何 Zotero Note：
+把卡片显示在 Zotero 条目下走 **Zotero Web API**（不依赖本地版本，桌面端同步后即可看到子 Note）。先在 <https://www.zotero.org/settings/keys> 创建带写权限（Allow write access）的 API Key，并在同一页面查看你的 userID，然后设置环境变量：
+
+~~~bash
+export ZOTERO_USER_ID="你的 userID"
+export ZOTERO_API_KEY="你的 API key"
+~~~
+
+本地 API（127.0.0.1:23119）仅继续用于读取集合、附件与全文索引。默认命令只预览，不会写入任何 Zotero Note：
 
 ~~~bash
 # 预览将创建/更新哪些子 Note
@@ -113,7 +140,9 @@ auth.lower + "-" + year + "-" + shorttitle(3,3)
 .venv/bin/python -m comm_paper_radar.research_web --base-dir .
 ~~~
 
-然后在浏览器打开 `http://127.0.0.1:8765/`。若该端口被占用，可以使用 `--port 8876`。网页的 AI 任务只发送本次选择的附件全文，不发送 Zotero 手写 Note；Key 只保留在当前后端进程内存中。采用正式卡片后可在网页点击“同步到 Zotero”。自动同步需要 Zotero 10+ 并在首次写入时接受授权；Zotero 9 会在界面中提示升级要求。
+然后在浏览器打开 `http://127.0.0.1:8765/`。若该端口被占用，可以使用 `--port 8876`。网页的 AI 任务只发送本次选择的附件全文，不发送 Zotero 手写 Note；Key 只保留在当前后端进程内存中。采用正式卡片后可在网页点击“同步到 Zotero”，写入走 Zotero Web API（需要 `ZOTERO_USER_ID` 与 `ZOTERO_API_KEY`）。
+
+网页共有五个视图：**今日精读**（每日三篇推荐卡，支持已读/收藏/有用反馈）、**精读桌**、**比较台**、**研究地图**、**推荐历史**（按槽位、期刊、已读状态筛选过往推荐）。
 
 ## 手动检索
 
@@ -128,7 +157,8 @@ python -m comm_paper_radar search --profile ai_communication --keywords "deepfak
 
 ## GitHub Actions
 
-`.github/workflows/weekly-paper-radar.yml` 每周一北京时间上午自动运行，也支持手动触发专题报告。
+- `.github/workflows/weekly-paper-radar.yml` 每周一北京时间上午自动运行，也支持手动触发专题报告。
+- `.github/workflows/daily-paper-feed.yml` 每天北京时间 08:00 生成每日 3 篇精读推荐并发送 HTML 邮件；支持手动触发（可选跳过 LLM）。
 
 需要配置 Secrets：
 
@@ -137,10 +167,13 @@ python -m comm_paper_radar search --profile ai_communication --keywords "deepfak
 - `SEMANTIC_SCHOLAR_API_KEY`: 可选。提高 Semantic Scholar 限额。
 - `RESEND_API_KEY`: 必需。Resend 邮件发送 API key。
 - `RESEND_FROM_EMAIL`: 必需。测试阶段可使用 `Paper Radar <onboarding@resend.dev>`。
+- `LLM_API_KEY`: 每日推荐的深度解读必需（OpenAI 兼容接口）。缺失时每日推荐仍会生成，只是没有 LLM 解读。
+- `LLM_BASE_URL`: 可选。默认 `https://api.openai.com/v1`；DeepSeek 填 `https://api.deepseek.com`。
+- `LLM_MODEL`: 可选。默认 `gpt-4o-mini`。
 
 在 Actions 页面手动运行 workflow 并选择 `email-test`，可以只发送测试邮件，
 不抓取论文或改动报告文件。
 
 ## 合规边界
 
-本项目只抓取公开元数据、摘要、DOI、期刊页和 OA 链接；不模拟登录、不下载 PDF、不绕过访问控制。
+本项目只抓取公开元数据、摘要、DOI、期刊页和 OA 链接；不��拟登录、不下载 PDF、不绕过访问控制。

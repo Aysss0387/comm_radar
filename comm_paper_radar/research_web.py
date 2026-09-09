@@ -27,6 +27,7 @@ from .research_workspace import (
     BetterBibTeXClient,
     ResearchWorkspaceError,
     ZoteroLocalClient,
+    zotero_web_client_from_env,
     extract_my_thoughts,
     iter_collection_cards,
     load_card,
@@ -334,6 +335,93 @@ class CardStore:
         return {"collection": collection, "card_count": len(cards), "theories": sorted(theories.values(), key=lambda item: item["name"].casefold()), "methods": sorted(methods.values(), key=lambda item: item["name"].casefold()), "links": links, "incomplete": [card["citekey"] for card in cards if not card["theories"] or not card["methods"]]}
 
 
+class DailyStore:
+    """Read the daily feed and persist feedback (read/starred/useful) back to it."""
+
+    def __init__(self, base_dir: Path):
+        self.base_dir = base_dir
+        self.feed_path = base_dir / "data" / "daily_feed.jsonl"
+        self.feedback_path = base_dir / "data" / "feedback.json"
+        self._lock = threading.RLock()
+
+    def _records(self) -> List[Dict[str, Any]]:
+        if not self.feed_path.exists():
+            return []
+        records = []
+        for line in self.feed_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except ValueError:
+                continue
+        return records
+
+    def dates(self) -> List[str]:
+        return sorted({str(record.get("date")) for record in self._records() if record.get("date")}, reverse=True)
+
+    def day(self, day: Optional[str] = None) -> Dict[str, Any]:
+        records = self._records()
+        dates = sorted({str(record.get("date")) for record in records if record.get("date")}, reverse=True)
+        target = day or (dates[0] if dates else None)
+        return {"date": target, "dates": dates, "papers": [record for record in records if record.get("date") == target]}
+
+    def history(self, slot: str = "", venue: str = "", read_state: str = "") -> List[Dict[str, Any]]:
+        records = self._records()
+        if slot:
+            records = [record for record in records if record.get("slot") == slot]
+        if venue:
+            venue_query = venue.casefold()
+            records = [record for record in records if venue_query in str(record.get("venue", "")).casefold()]
+        if read_state == "read":
+            records = [record for record in records if (record.get("feedback") or {}).get("read")]
+        elif read_state == "unread":
+            records = [record for record in records if not (record.get("feedback") or {}).get("read")]
+        return sorted(records, key=lambda record: (str(record.get("date")), record.get("slot", "")), reverse=True)
+
+    def apply_feedback(self, day: str, dedupe_key: str, field: str, value: Any) -> Dict[str, Any]:
+        if field not in {"read", "starred", "useful"}:
+            raise ValueError("反馈字段必须是 read、starred 或 useful。")
+        with self._lock:
+            records = self._records()
+            target = next((record for record in records if record.get("date") == day and record.get("dedupe_key") == dedupe_key), None)
+            if not target:
+                raise KeyError(dedupe_key)
+            feedback = target.setdefault("feedback", {"read": False, "starred": False, "useful": None})
+            previous_useful = feedback.get("useful")
+            if field == "useful":
+                feedback["useful"] = value if value in {True, False} else None
+            else:
+                feedback[field] = bool(value)
+            with self.feed_path.open("w", encoding="utf-8") as handle:
+                for record in records:
+                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            if field == "useful":
+                self._update_feedback_summary(str(target.get("venue", "")), previous_useful, feedback["useful"])
+            return target
+
+    def _update_feedback_summary(self, venue: str, previous: Any, current: Any) -> None:
+        if not venue or previous == current:
+            return
+        try:
+            payload = json.loads(self.feedback_path.read_text(encoding="utf-8")) if self.feedback_path.exists() else {}
+        except (OSError, ValueError):
+            payload = {}
+        venues = payload.setdefault("venues", {})
+        counts = venues.setdefault(venue, {"useful": 0, "useless": 0})
+        if previous is True:
+            counts["useful"] = max(0, counts["useful"] - 1)
+        elif previous is False:
+            counts["useless"] = max(0, counts["useless"] - 1)
+        if current is True:
+            counts["useful"] += 1
+        elif current is False:
+            counts["useless"] += 1
+        self.feedback_path.parent.mkdir(parents=True, exist_ok=True)
+        self.feedback_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 class AIService:
     def __init__(self, base_dir: Path):
         self.base_url = "https://api.openai.com/v1"
@@ -468,7 +556,7 @@ class AIService:
 def create_app(base_dir: Path) -> Flask:
     base_dir = base_dir.resolve()
     app = Flask(__name__, static_folder=str(base_dir / "web"), static_url_path="/assets")
-    store, ai = CardStore(base_dir), AIService(base_dir)
+    store, ai, daily = CardStore(base_dir), AIService(base_dir), DailyStore(base_dir)
     session_token = secrets.token_urlsafe(24)
 
     @app.before_request
@@ -490,6 +578,25 @@ def create_app(base_dir: Path) -> Flask:
     @app.get("/api/collections")
     def collections() -> Any:
         return jsonify({"collections": store.collections()})
+
+    @app.get("/api/daily")
+    def daily_feed() -> Any:
+        return jsonify(daily.day(request.args.get("date")))
+
+    @app.get("/api/daily/history")
+    def daily_history() -> Any:
+        return jsonify({"papers": daily.history(request.args.get("slot", ""), request.args.get("venue", ""), request.args.get("read_state", ""))})
+
+    @app.post("/api/daily/feedback")
+    def daily_feedback() -> Any:
+        payload = request.get_json(force=True)
+        try:
+            record = daily.apply_feedback(str(payload.get("date", "")), str(payload.get("dedupe_key", "")), str(payload.get("field", "")), payload.get("value"))
+            return jsonify(record)
+        except KeyError:
+            return jsonify({"error": "找不到这条每日推荐。"}), 404
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
 
     @app.get("/api/cards")
     def cards() -> Any:
@@ -579,9 +686,12 @@ def create_app(base_dir: Path) -> Flask:
     def settings() -> Any:
         try:
             zotero = ZoteroLocalClient(); zotero.collections()
-            zotero_status = {"api_url": DEFAULT_ZOTERO_URL, "bbt_url": DEFAULT_BBT_URL, "version": zotero.last_version, "writable": str(zotero.last_version or "").split(".", 1)[0].isdigit() and int(str(zotero.last_version).split(".", 1)[0]) >= 10}
+            zotero_status = {"api_url": DEFAULT_ZOTERO_URL, "bbt_url": DEFAULT_BBT_URL, "version": zotero.last_version}
         except ResearchWorkspaceError as error:
-            zotero_status = {"api_url": DEFAULT_ZOTERO_URL, "bbt_url": DEFAULT_BBT_URL, "error": str(error), "writable": False}
+            zotero_status = {"api_url": DEFAULT_ZOTERO_URL, "bbt_url": DEFAULT_BBT_URL, "error": str(error)}
+        web_configured = bool(os.getenv("ZOTERO_USER_ID", "").strip() and os.getenv("ZOTERO_API_KEY", "").strip())
+        zotero_status["writable"] = web_configured
+        zotero_status["web_api"] = {"configured": web_configured, "hint": None if web_configured else "设置 ZOTERO_USER_ID 与 ZOTERO_API_KEY 后即可同步精读卡到 Zotero（zotero.org/settings/keys，需勾选写权限）。"}
         return jsonify({"ai": ai.public_settings(), "zotero": zotero_status})
 
     @app.patch("/api/settings/ai")
@@ -648,7 +758,7 @@ def create_app(base_dir: Path) -> Flask:
         try:
             _, metadata, _ = store._find(_safe_id(citekey), request.args.get("collection"))
             collection = str(metadata["collection"])
-            report = sync_zotero_notes(store.cards_dir, collection, base_dir / "research" / "zotero-sync" / "notes.json", ZoteroLocalClient(), dry_run=False)
+            report = sync_zotero_notes(store.cards_dir, collection, base_dir / "research" / "zotero-sync" / "notes.json", zotero_web_client_from_env(), dry_run=False)
             result = next((item for item in report if Path(str(item.get("card_path", ""))).name == f"{citekey}.md"), None)
             if not result or result.get("status") not in {"created", "updated", "unchanged"}:
                 raise ResearchWorkspaceError(str((result or {}).get("issues", ["同步未完成"])[0]))

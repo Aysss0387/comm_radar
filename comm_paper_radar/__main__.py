@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 
 from .config import load_settings
+from .daily import run_daily
 from .pipeline import run_search, run_weekly
 
 
@@ -29,9 +30,28 @@ def main() -> None:
     search_parser.add_argument("--mark-recommended", action="store_true", help="将手动报告论文写入推荐历史")
     search_parser.add_argument("--dry-run", action="store_true", help="只运行流程，不写文件")
 
+    daily_parser = subparsers.add_parser("daily", help="生成每日 3 篇精读推荐（三槽位：相关/理论/方法）")
+    daily_parser.add_argument("--date", dest="daily_date", default=None, help="推荐日期 YYYY-MM-DD，默认今天")
+    daily_parser.add_argument("--skip-llm", action="store_true", help="跳过 LLM 深度解读，只输出元数据卡片")
+    daily_parser.add_argument("--dry-run", action="store_true", help="只运行流程，不写文件")
+
     args = parser.parse_args()
     base_dir = Path(args.base_dir)
     settings = load_settings(args.config)
+
+    if args.command == "daily":
+        records = run_daily(
+            settings,
+            base_dir,
+            day=args.daily_date,
+            dry_run=args.dry_run,
+            skip_llm=args.skip_llm,
+        )
+        print(f"Selected {len(records)} daily papers")
+        for record in records:
+            stars = "⭐" * int((record.get("analysis") or {}).get("priority", 3))
+            print(f"[{record['slot_label']}] {stars} {record['title']} — {record['venue']}")
+        return
 
     if args.command == "run":
         selected = run_weekly(
