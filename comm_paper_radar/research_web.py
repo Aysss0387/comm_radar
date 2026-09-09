@@ -108,6 +108,46 @@ def _parse_ai_json(content: str) -> Dict[str, Any]:
     return parsed
 
 
+COMPARE_DIMENSIONS: List[Any] = [
+    ("阅读概览", ["阅读概览"]),
+    ("研究问题", ["研究问题", "Research Questions / Hypotheses"]),
+    ("理论与概念", ["理论与概念", "Theory and Key Constructs"]),
+    ("操作化", ["操作化", "Operationalization"]),
+    ("数据与样本", ["数据与样本", "Research Context, Data, and Sample"]),
+    ("方法", ["方法", "Method and Analysis"]),
+    ("发现", ["主要发现", "Main Findings"]),
+    ("局限", ["贡献与局限", "Contributions and Limitations"]),
+]
+
+
+def _dimension_rows(cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def pick(card: Dict[str, Any], names: List[str]) -> str:
+        for name in names:
+            value = str(card["sections"].get(name) or "").strip()
+            if value and value != "本次材料未覆盖。":
+                return value
+        return "未报告"
+
+    rows = [{"label": label, "values": [pick(card, names) for card in cards]} for label, names in COMPARE_DIMENSIONS]
+    return [row for row in rows if any(value != "未报告" for value in row["values"])]
+
+
+def _group_synthesis_prompt(group: Mapping[str, Any]) -> str:
+    papers = []
+    for index, card in enumerate(group["cards"]):
+        parts = [f"论文{index + 1}：{card.get('title', '')}（{card.get('citekey', '')}）"]
+        for row in group["rows"]:
+            value = str(row["values"][index] or "")
+            if value and value != "未报告":
+                parts.append(f"  {row['label']}：{value[:400]}")
+        papers.append("\n".join(parts))
+    corpus = "\n\n".join(papers)[:9000]
+    return f"""你是传播学领域的综述作者。以下是「{group['label']}」类别下的 {len(group['cards'])} 篇精读卡内容。请输出一个 JSON 对象（不要解释文字、不要代码块），字段：
+{{"overview": "这组论文的整体图景与共同关切，两三句", "convergence": "各篇趋同的发现或共识，一两句", "divergence": "分歧、张力或方法路径差异，一两句", "gaps": "这组文献留下的研究缺口与可行的下一步选题，一两句", "reading_order": "建议的阅读顺序（用论文序号或短标题）及一句理由"}}
+
+{corpus}"""
+
+
 def _theory_method_prompt(body: str) -> str:
     return f"""从下面的传播学论文精读卡内容中，抽取论文实际使用的理论和研究方法。输出一个 JSON 对象（不要解释、不要代码块），字段：
 {{"theories": ["理论名称，用领域通用的简短中文名，如：框架理论、议程设置、第三人效果；最多 4 个；没有明确理论则为空数组"], "methods": ["方法名称，用通用的简短中文名，如：问卷调查、实验、内容分析、深度访谈、计算文本分析；最多 4 个"]}}
@@ -515,27 +555,7 @@ class CardStore:
         if not 2 <= len(citekeys) <= 4:
             raise ValueError("比较需要选择 2 到 4 篇论文。")
         cards = [self.detail(key, collection) for key in citekeys]
-        dimensions = [
-            ("阅读概览", ["阅读概览"]),
-            ("研究问题", ["研究问题", "Research Questions / Hypotheses"]),
-            ("理论与概念", ["理论与概念", "Theory and Key Constructs"]),
-            ("操作化", ["操作化", "Operationalization"]),
-            ("数据与样本", ["数据与样本", "Research Context, Data, and Sample"]),
-            ("方法", ["方法", "Method and Analysis"]),
-            ("发现", ["主要发现", "Main Findings"]),
-            ("局限", ["贡献与局限", "Contributions and Limitations"]),
-        ]
-
-        def pick(card: Dict[str, Any], names: List[str]) -> str:
-            for name in names:
-                value = str(card["sections"].get(name) or "").strip()
-                if value and value != "本次材料未覆盖。":
-                    return value
-            return "未报告"
-
-        rows = [{"label": label, "values": [pick(card, names) for card in cards]} for label, names in dimensions]
-        rows = [row for row in rows if any(value != "未报告" for value in row["values"])]
-        return {"cards": [card["summary"] for card in cards], "rows": rows}
+        return {"cards": [card["summary"] for card in cards], "rows": _dimension_rows(cards)}
 
     def map_data(self, collection: str) -> Dict[str, Any]:
         cards = [card for card in self.list_cards(collection) if card.get("has_card")]
@@ -565,6 +585,17 @@ class CardStore:
             "titles": {card["citekey"]: str(card.get("title") or card["citekey"]) for card in cards},
             "incomplete": [card["citekey"] for card in cards if not card["theories"] or not card["methods"]],
         }
+
+    def group(self, collection: str, theory: str = "", method: str = "") -> Dict[str, Any]:
+        if not theory and not method:
+            raise ValueError("请选择理论或方法类别。")
+        data = self.map_data(collection)
+        keys = sorted({link["citekey"] for link in data["links"] if (not theory or link["theory"] == theory) and (not method or link["method"] == method)})
+        if not keys:
+            raise ValueError("这个类别下暂时没有精读卡。")
+        cards = [self.detail(key, collection) for key in keys[:8]]
+        label = " × ".join(part for part in (theory, method) if part)
+        return {"label": label, "theory": theory, "method": method, "citekeys": keys, "cards": [card["summary"] for card in cards], "rows": _dimension_rows(cards)}
 
 
 class DailyStore:
@@ -1107,6 +1138,44 @@ def create_app(base_dir: Path) -> Flask:
         if not collection:
             return jsonify({"error": "需要指定集合。"}), 400
         return jsonify(store.map_data(collection))
+
+    def _group_cache_key(collection: str, theory: str, method: str) -> str:
+        return f"mapgroup:{collection}:{theory}|{method}"
+
+    @app.get("/api/map/group")
+    def map_group() -> Any:
+        collection = request.args.get("collection") or ""
+        theory = (request.args.get("theory") or "").strip()
+        method = (request.args.get("method") or "").strip()
+        if not collection:
+            return jsonify({"error": "需要指定集合。"}), 400
+        try:
+            result = store.group(collection, theory, method)
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 404
+        cached = store.enrichment_map().get(_group_cache_key(collection, theory, method))
+        if cached:
+            result["synthesis"] = cached
+        return jsonify(result)
+
+    @app.post("/api/map/group/analyze")
+    def map_group_analyze() -> Any:
+        payload = request.get_json(force=True)
+        collection = str(payload.get("collection") or "")
+        theory = str(payload.get("theory") or "").strip()
+        method = str(payload.get("method") or "").strip()
+        try:
+            result = store.group(collection, theory, method)
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 404
+        try:
+            content, _usage = ai._chat(_group_synthesis_prompt(result), system="Return only valid JSON, no markdown.")
+            data = _parse_ai_json(content)
+            data["generated_at"] = _utc_now()
+            store.save_enrichment(_group_cache_key(collection, theory, method), "mapgroup", data)
+            return jsonify({"synthesis": data})
+        except (RuntimeError, requests.RequestException, ValueError) as error:
+            return jsonify({"error": str(error)}), 502
 
     @app.get("/api/settings")
     def settings() -> Any:
