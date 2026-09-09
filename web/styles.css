@@ -85,6 +85,40 @@
 .task-adopt{margin-top:10px}
 .task-fails{margin-top:6px}
 .task-fails summary{font-size:11px;color:#b0472e;cursor:pointer}
+/* 精读桌总览模式 */
+.mode-switch{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;background:#fff}
+.mode-btn{border:0;background:transparent;padding:7px 16px;font-size:12px;font-weight:700;color:var(--muted);cursor:pointer;font-family:inherit}
+.mode-btn.on{background:var(--teal);color:#fff}
+.library-table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);background:#fff}
+.library-table{width:100%;border-collapse:collapse;font-size:12.5px}
+.library-table th{text-align:left;font-size:11px;color:var(--teal);padding:12px 14px;border-bottom:1px solid var(--line);white-space:nowrap;background:#fbfcf8;position:sticky;top:0}
+.library-table td{padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.6}
+.library-table tr[data-key]{cursor:pointer}
+.library-table tr[data-key]:hover{background:#f6faf7}
+.library-table tr.active{background:#eef6f1}
+.library-table .lt-title{min-width:260px;max-width:420px}
+.library-table .lt-title strong{display:block;font-size:13px;line-height:1.5}
+.library-table .lt-title small{display:block;color:var(--muted);margin-top:4px}
+.library-table .lt-journal{max-width:180px}
+.library-table .lt-tags{max-width:180px}
+.library-table .lt-check{width:34px}
+/* 研究地图交互 */
+.mx-head,.mx-cell{border:0;background:transparent;font:inherit;cursor:pointer;padding:4px 8px;border-radius:8px}
+.mx-head{font-weight:700;color:var(--teal-dark);text-align:left}
+.mx-head b{font-weight:600;color:var(--muted);font-size:10px}
+.mx-cell{background:#e7f2ee;color:var(--teal-dark);font-weight:800;min-width:34px}
+.mx-head:hover,.mx-cell:hover{background:var(--yellow)}
+.mx-cell.focus,.mx-head.focus,.method-chip.focus{background:var(--teal);color:#fff}
+.mx-cell.focus b,.method-chip.focus b{color:#fff}
+.mx-empty{color:var(--line);text-align:center}
+.map-detail{display:flex;flex-direction:column;gap:8px}
+.map-focus-label{font-size:12px;font-weight:800;color:var(--teal-dark);margin:0 0 2px}
+.map-paper{border:1px solid var(--line);border-radius:10px;background:#fff;padding:10px 12px;text-align:left;cursor:pointer;font-family:inherit}
+.map-paper:hover{border-color:var(--teal);background:#f6faf7}
+.map-paper strong{display:block;font-size:12.5px;line-height:1.5}
+.map-paper small{display:block;color:var(--muted);margin-top:4px;font-size:11px}
+.map-paper.subtle strong{color:#8a6d3b}
+.method-list .method-chip{cursor:pointer;font-family:inherit;border:1px solid var(--line)}
 /* 每日 AI 评语 */
 .daily-review{border:1px solid var(--line);border-left:3px solid var(--teal);border-radius:10px;background:#f6faf7;padding:14px 16px;margin:12px 0}
 .daily-review h3{margin:0 0 10px;font-size:13px;color:var(--teal-dark)}
