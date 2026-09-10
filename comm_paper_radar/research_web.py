@@ -172,7 +172,7 @@ def _daily_review_prompt(paper: Mapping[str, Any]) -> str:
 def _enrichment_prompt(paper: Mapping[str, Any]) -> str:
     tags = "、".join(paper.get("tags", [])) or "无"
     abstract = str(paper.get("abstract") or "").strip() or "（无摘要）"
-    return f"""你是传播学研究助理。根据下面论文的元数据，输出一个 JSON 对象（不要任何解释文字、不要代码块），字段：
+    return f"""你���传播学研究助理。根据下面论文的元数据，输出一个 JSON 对象（不要任何解释文字、不要代码块），字段：
 {{"abstract_zh": "摘要的完整中文翻译；若无摘要则为空字符串", "keywords": ["3-8 个中文关键词"], "tags": ["3-5 个研究标签，例如：定量、实验、内容分析、框架理论、健康传播、政治传播、计算方法"], "quick_take": "一到两句话说明这篇论文做了什么、核心发现或价值", "method": "研究方法一句话概括；无法判断写空字符串", "theory": "核心理论；无法判断写空字符串"}}
 
 论文标题：{paper.get('title', '')}
@@ -446,7 +446,7 @@ class CardStore:
     def _source_excerpt(self, metadata: Mapping[str, Any], locator_number: str) -> Dict[str, Any]:
         item_key = str(metadata.get("zotero_item_key") or "").strip()
         if not item_key:
-            return {"status": "unavailable", "message": "卡片尚未绑定 Zotero 条目。"}
+            return {"status": "unavailable", "message": "卡片尚��绑定 Zotero 条目。"}
         if _published():
             return {"status": "unavailable", "message": "发布环境不读取本地 PDF 全文；请以条目元数据与卡片内容为准，需要核对原文时使用本地工作台。"}
         try:
@@ -753,7 +753,7 @@ class AIService:
         for path in self.task_dir.glob("*.json"):
             try:
                 task = json.loads(path.read_text(encoding="utf-8"))
-                if task.get("status") in {"排队", "读取材料", "分析中"}:
+                if task.get("status") in {"排队", "读取材料", "分析中", "生成中"}:
                     task["status"] = "已中断"
                     path.write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")
                 self.tasks[str(task["id"])] = task
@@ -846,6 +846,31 @@ class AIService:
             self._save_task(task_id)
         self.executor.submit(self._run, task_id, reading_prompt(paper, snapshot))
         return task_id
+
+    def create_job(self, task_type: str, label: str, job: Any) -> str:
+        """Queue an arbitrary background job so it shows up in the task drawer."""
+        with self.lock:
+            for task in self.tasks.values():
+                if task.get("type") == task_type and task.get("status") in {"排队", "生成中"}:
+                    return str(task["id"])
+        task_id = uuid.uuid4().hex
+        task = {"id": task_id, "type": task_type, "label": label, "citekeys": [], "status": "排队", "created_at": _utc_now(), "result": None, "error": None, "usage": None}
+        with self.lock:
+            self.tasks[task_id] = task
+            self._save_task(task_id)
+        self.executor.submit(self._run_job, task_id, job)
+        return task_id
+
+    def _run_job(self, task_id: str, job: Any) -> None:
+        with self.lock:
+            self.tasks[task_id]["status"] = "生成中"
+            self.tasks[task_id]["started_at"] = _utc_now()
+            self._save_task(task_id)
+        try:
+            summary = job()
+            self._finish(task_id, {"status": "完成", "result": str(summary or "已完成。")})
+        except Exception as error:  # task boundary: report failure to UI
+            self._finish(task_id, {"status": "失败", "error": str(error)})
 
     def _chat(self, prompt: str, system: str = "Return clear Markdown.") -> Tuple[str, Any]:
         if not self.api_key or not self.model:
@@ -993,10 +1018,20 @@ def create_app(base_dir: Path) -> Flask:
 
     @app.post("/api/daily/generate")
     def generate_daily_feed() -> Any:
+        today = datetime.now(timezone.utc).date().isoformat()
         try:
-            return jsonify(daily.generate())
-        except (ResearchWorkspaceError, DatabaseUnavailable, requests.RequestException, TimeoutError) as error:
+            existing = daily.day(today)
+        except (ResearchWorkspaceError, DatabaseUnavailable) as error:
             return jsonify({"error": str(error)}), 503
+        if len(existing.get("papers", [])) >= 3:
+            return jsonify({**existing, "dates": daily.dates(), "generated": False})
+
+        def job() -> str:
+            result = daily.generate()
+            return f"已保存 {len(result.get('papers', []))} 篇推荐（{result.get('date', today)}）。回到「今日精读」页即可查看。"
+
+        task_id = ai.create_job("daily", f"每日精读推荐 · {today}", job)
+        return jsonify({"queued": True, "task_id": task_id, "date": today})
 
     @app.get("/api/daily/history")
     def daily_history() -> Any:
