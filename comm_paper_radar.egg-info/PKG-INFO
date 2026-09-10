@@ -2,12 +2,14 @@ Metadata-Version: 2.4
 Name: comm-paper-radar
 Version: 0.1.0
 Summary: Weekly communication and computational communication paper radar.
-Requires-Python: >=3.8
+Requires-Python: >=3.9
 Description-Content-Type: text/markdown
 Requires-Dist: Flask>=3.0.0
 Requires-Dist: Markdown>=3.6
 Requires-Dist: PyYAML>=6.0.1
 Requires-Dist: requests>=2.31.0
+Requires-Dist: asyncpg>=0.31.0
+Requires-Dist: pypdf>=6.0.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0.0; extra == "dev"
 
@@ -51,7 +53,7 @@ python -m comm_paper_radar daily
 python -m comm_paper_radar daily --skip-llm --dry-run
 ~~~
 
-推荐历史保存在 `data/daily_feed.jsonl`，自动与周报及历史每日推荐避重；近两周无合适新文的槽位回落到近四个月并标注「回溯推荐」。在本地工作台标记「有用/无用」会写入 `data/feedback.json`，轻度调整后续选文的期刊权重。
+网页中的推荐历史保存在 Neon，并按 UTC 日期幂等生成；同一天重复点击“获取今日精读推荐”会直接返回已保存结果。普通本地 CLI 继续使用 `data/daily_feed.jsonl`，自动与周报及历史推荐避重；近两周无合适新文的槽位回落到近四个月并标注「回溯推荐」。
 
 ## Zotero 日常科研工作台
 
@@ -119,7 +121,7 @@ export ZOTERO_API_KEY="你的 API key"
 对应的本地命令可用于创建模板、校验卡片和生成地图：
 
 ~~~bash
-# 为一篇论文创建结构化精读卡；已有 My Thoughts 会被保留
+# 为一篇论文创建结构化精读卡；已有 My Thoughts 会被���留
 .venv/bin/python -m comm_paper_radar.research_workspace card-template \
   --citekey "smith-2024-PaperTitle" --title "Paper title" --collection "Framing" \
   --zotero-item-key "ABCD1234"
@@ -157,6 +159,20 @@ export ZOTERO_API_KEY="你的 API key"
 
 网页共有五个视图：**今日精读**（每日三篇推荐卡，支持已读/收藏/有用反馈）、**精读桌**、**比较台**、**研究地图**、**推荐历史**（按槽位、期刊、已读状态筛选过往推荐）。
 
+### 发布到 Vercel（个人使用）
+
+发布环境的凭据全部保存在 Vercel 项目的 **Settings → Environment Variables**（选 Production 和 Preview，保存后重新部署），配置一次即可长期使用：
+
+- `DEEPSEEK_API_KEY`：必需。网页 AI 精读/比较使用；配置后网页显示“DeepSeek 已由服务端配置”，不再需要输入 Key。可选 `DEEPSEEK_MODEL`（默认 `deepseek-chat`）、`DEEPSEEK_BASE_URL`（默认 `https://api.deepseek.com`）。
+- `ZOTERO_USER_ID`、`ZOTERO_API_KEY`：必需。发布环境不访问本地 Zotero，集合与论文改由 Zotero Web API（api.zotero.org）读取；同步精读卡需要 API Key 勾选 Allow write access。
+
+安全边界：
+
+- API Key 只存在服务端，任何接口响应、HTML 和日志都不返回密钥；发布环境也不接受网页提交的 Key。
+- 站点依赖 Vercel Deployment Protection 限制为本人访问；关闭该保护会让任何人读取文献元数据并消耗 DeepSeek 额度，不建议关闭。
+- 每日推荐、推荐反馈和已采用精读卡持久保存在 Neon；`DATABASE_URL` 由 Vercel 的 Neon 集成注入。未配置数据库的普通本地运行仍回退到 JSON/Markdown 文件。
+- 发布环境通过 Zotero Web API 从 Zotero File Storage 临时下载 PDF，解析后立即删除。附件必须是已同步的存储副本；`linked_file`、仅 WebDAV 文件、超过 20 MB 的 PDF 与无可提取文字的扫描件会返回明确提示。
+
 ## 手动检索
 
 ```bash
@@ -189,4 +205,4 @@ python -m comm_paper_radar search --profile ai_communication --keywords "deepfak
 
 ## 合规边界
 
-本项目只抓取公开元数据、摘要、DOI、期刊页和 OA 链接；不��拟登录、不下载 PDF、不绕过访问控制。
+论文发现流程只抓取公开元数据、摘要、DOI、期刊页和 OA 链接；精读流程仅使用当前 Zotero API Key 有权读取且已同步到本人 Zotero File Storage 的 PDF，不绕过访问控制，临时文件解析后立即删除。
