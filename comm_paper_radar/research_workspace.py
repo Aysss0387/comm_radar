@@ -315,6 +315,18 @@ class ZoteroLocalClient:
         payload, _ = self._request("GET", f"/users/0/collections/{collection_key}/items", params={"include": "data", "limit": 100})
         return [item for item in (payload or []) if item.get("data", {}).get("itemType") not in {"attachment", "note", "annotation"} and not item.get("data", {}).get("parentItem")]
 
+    def collection_items_by_name(self, name: str) -> List[Dict[str, Any]]:
+        matches = [item for item in self.collections() if item.get("data", {}).get("name") == name]
+        if not matches:
+            raise ResearchWorkspaceError(f"Zotero 中没有名为“{name}”的集合。")
+        items: Dict[str, Dict[str, Any]] = {}
+        for collection in matches:
+            for item in self.collection_items(str(collection.get("key") or collection.get("data", {}).get("key") or "")):
+                item_key = str(item.get("key") or item.get("data", {}).get("key") or "")
+                if item_key:
+                    items[item_key] = item
+        return list(items.values())
+
     def item(self, item_key: str) -> Dict[str, Any]:
         payload, _ = self._request("GET", f"/users/0/items/{item_key}", params={"include": "data"})
         return payload if isinstance(payload, dict) else {}
@@ -359,7 +371,7 @@ class ZoteroWebClient:
         except requests.RequestException as error:
             raise ResearchWorkspaceError(f"无法连接 Zotero Web API：{error}") from error
         if response.status_code == 401:
-            raise ResearchWorkspaceError("Zotero Web API 认证失败（401）：ZOTERO_API_KEY 无效或已撤销，请在 zotero.org/settings/keys 重新生成。")
+            raise ResearchWorkspaceError("Zotero Web API 认证失败（401）：ZOTERO_API_KEY 无��或已撤销，请在 zotero.org/settings/keys 重新生成。")
         if response.status_code == 403:
             raise ResearchWorkspaceError("Zotero Web API 拒绝访问（403）：请确认 ZOTERO_USER_ID 正确，且 API Key 勾选了库的写权限（Allow write access）。")
         if response.status_code == 404:
@@ -399,6 +411,18 @@ class ZoteroWebClient:
     def collection_items(self, collection_key: str) -> List[Dict[str, Any]]:
         payload = self._request_paged(f"/collections/{collection_key}/items")
         return [item for item in payload if item.get("data", {}).get("itemType") not in {"attachment", "note", "annotation"} and not item.get("data", {}).get("parentItem")]
+
+    def collection_items_by_name(self, name: str) -> List[Dict[str, Any]]:
+        matches = [item for item in self.collections() if item.get("data", {}).get("name") == name]
+        if not matches:
+            raise ResearchWorkspaceError(f"Zotero 云端没有名为“{name}”的集合。")
+        items: Dict[str, Dict[str, Any]] = {}
+        for collection in matches:
+            for item in self.collection_items(str(collection.get("key") or collection.get("data", {}).get("key") or "")):
+                item_key = str(item.get("key") or item.get("data", {}).get("key") or "")
+                if item_key:
+                    items[item_key] = item
+        return list(items.values())
 
     def item(self, item_key: str) -> Dict[str, Any]:
         payload, _ = self._request("GET", f"/items/{item_key}")
