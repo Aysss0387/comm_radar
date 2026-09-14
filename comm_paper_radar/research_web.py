@@ -172,7 +172,7 @@ def _daily_review_prompt(paper: Mapping[str, Any]) -> str:
 def _enrichment_prompt(paper: Mapping[str, Any]) -> str:
     tags = "、".join(paper.get("tags", [])) or "无"
     abstract = str(paper.get("abstract") or "").strip() or "（无摘要）"
-    return f"""你���传播学研究助理。根据下面论文的元数据，输出一个 JSON 对象（不要任何解释文字、不要代码块），字段：
+    return f"""你�����传播学研究助理。根据下面论文的元数据，输出一个 JSON 对象（不要任何解释文字、不要代码块），字段：
 {{"abstract_zh": "摘要的完整中文翻译；若无摘要则为空字符串", "keywords": ["3-8 个中文关键词"], "tags": ["3-5 个研究标签，例如：定量、实验、内容分析、框架理论、健康传播、政治传播、计算方法"], "quick_take": "一到两句话说明这篇论文做了什么、核心发现或价值", "method": "研究方法一句话概括；无法判断写空字符串", "theory": "核心理论；无法判断写空字符串"}}
 
 论文标题：{paper.get('title', '')}
@@ -315,8 +315,7 @@ class CardStore:
         """Return per-item bibliographic metadata plus the raw Zotero items for a collection."""
         try:
             zotero = zotero_web_client_from_env() if _use_zotero_web_api() else ZoteroLocalClient()
-            zotero_collection = zotero.collection_by_name(collection)
-            items = zotero.collection_items(str(zotero_collection.get("key")))
+            items = zotero.collection_items_by_name(collection)
         except Exception:
             return {}, []
         settings = self._settings()

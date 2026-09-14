@@ -320,6 +320,26 @@ def test_zotero_web_client_paginates_beyond_first_page():
     assert session.requests[1]["params"]["start"] == 100
 
 
+def test_zotero_web_client_combines_duplicate_collection_names():
+    collections = [
+        {"key": "COL1", "data": {"name": "重复集合"}},
+        {"key": "COL2", "data": {"name": "重复集合"}},
+    ]
+    first_items = [{"key": "ITEM1", "data": {"itemType": "journalArticle", "title": "First"}}]
+    second_items = [
+        {"key": "ITEM1", "data": {"itemType": "journalArticle", "title": "First"}},
+        {"key": "ITEM2", "data": {"itemType": "journalArticle", "title": "Second"}},
+    ]
+    session = FakeSession([FakeResponse(200, collections), FakeResponse(200, first_items), FakeResponse(200, second_items)])
+    client = ZoteroWebClient("12345", "secret-key", session=session)
+
+    items = client.collection_items_by_name("重复集合")
+
+    assert [item["key"] for item in items] == ["ITEM1", "ITEM2"]
+    assert session.requests[1]["url"].endswith("/collections/COL1/items")
+    assert session.requests[2]["url"].endswith("/collections/COL2/items")
+
+
 def test_zotero_web_client_reads_key_write_permission():
     session = FakeSession([FakeResponse(200, {"access": {"user": {"library": True, "write": True}}})])
     client = ZoteroWebClient("12345", "secret-key", session=session)
