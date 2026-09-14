@@ -11,7 +11,7 @@ def prepare_runtime_base(source_base: Path) -> Path:
         return source_base
 
     runtime_base = Path(tempfile.mkdtemp(prefix="comm-radar-"))
-    for directory_name in ("web", "research", "data"):
+    for directory_name in ("config", "web", "research", "data"):
         source = source_base / directory_name
         destination = runtime_base / directory_name
         if source.is_dir():
